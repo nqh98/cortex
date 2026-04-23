@@ -1,0 +1,22 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cortex index database
+.cortex/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.env.*
+
+# OS
+Thumbs.db

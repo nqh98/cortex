@@ -1,0 +1,14 @@
+[database]
+path = ".cortex/db.sqlite"
+
+[indexing]
+max_file_size_kb = 1024
+supported_extensions = ["rs", "py", "js", "ts"]
+
+[embeddings]
+enabled = false
+model = "AllMiniLML6V2"
+batch_size = 32
+
+[watcher]
+debounce_ms = 500
