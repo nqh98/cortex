@@ -197,10 +197,114 @@ pub async fn delete_all(pool: &DbPool) -> crate::error::Result<u64> {
         .await
         .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
 
-    sqlx::raw_sql("DELETE FROM symbols").execute(pool).await
+    sqlx::raw_sql("DELETE FROM symbols")
+        .execute(pool)
+        .await
         .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
-    sqlx::raw_sql("DELETE FROM files").execute(pool).await
+    sqlx::raw_sql("DELETE FROM files")
+        .execute(pool)
+        .await
         .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
 
     Ok(count.0 as u64)
+}
+
+/// Get statistics for a specific project
+pub async fn get_project_stats(
+    pool: &DbPool,
+    project_root: &str,
+) -> crate::error::Result<(u32, u32, Option<String>)> {
+    let file_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files WHERE project_root = ?")
+        .bind(project_root)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    let symbol_count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM symbols s JOIN files f ON s.file_id = f.id WHERE f.project_root = ?",
+    )
+    .bind(project_root)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    let last_indexed: Option<(String,)> = sqlx::query_as(
+        "SELECT MAX(last_indexed) FROM files WHERE project_root = ?",
+    )
+    .bind(project_root)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    Ok((
+        file_count.0 as u32,
+        symbol_count.0 as u32,
+        last_indexed.map(|r| r.0),
+    ))
+}
+
+/// Get languages used in a project
+pub async fn get_project_languages(
+    pool: &DbPool,
+    project_root: &str,
+) -> crate::error::Result<Vec<String>> {
+    let languages: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT language FROM files WHERE project_root = ? ORDER BY language",
+    )
+    .bind(project_root)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    Ok(languages.into_iter().map(|l| l.0).collect())
+}
+
+/// Get total symbol count across all projects
+pub async fn get_total_symbol_count(pool: &DbPool) -> crate::error::Result<u32> {
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM symbols")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    Ok(count.0 as u32)
+}
+
+/// Get symbols grouped by kind
+pub async fn get_symbols_by_kind(
+    pool: &DbPool,
+) -> crate::error::Result<std::collections::HashMap<String, u32>> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT kind, COUNT(*) as count FROM symbols GROUP BY kind ORDER BY count DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    let mut result = std::collections::HashMap::new();
+    for (kind, count) in rows {
+        result.insert(kind, count as u32);
+    }
+
+    Ok(result)
+}
+
+/// Get symbols grouped by language
+pub async fn get_symbols_by_language(
+    pool: &DbPool,
+) -> crate::error::Result<std::collections::HashMap<String, u32>> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT f.language, COUNT(*) as count
+         FROM symbols s JOIN files f ON s.file_id = f.id
+         GROUP BY f.language ORDER BY count DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    let mut result = std::collections::HashMap::new();
+    for (language, count) in rows {
+        result.insert(language, count as u32);
+    }
+
+    Ok(result)
 }
