@@ -15,6 +15,52 @@ A local-first code context engine that indexes your source code, extracts semant
 
 ## Installation
 
+### Docker (recommended — no host dependencies)
+
+Build the image (includes all features — embeddings, vector search, etc.):
+
+```bash
+docker build -t cortex .
+```
+
+Everything is self-contained inside the container. No Rust, no system libraries, nothing touches your OS.
+
+#### Index a project
+
+```bash
+docker run --rm -v /path/to/your/project:/project cortex index /project
+```
+
+#### Search symbols
+
+```bash
+docker run --rm -v /path/to/your/project:/project cortex search "handler"
+```
+
+#### Persist the index between runs
+
+```bash
+docker volume create cortex-data
+docker run --rm -v /path/to/your/project:/project -v cortex-data:/home/cortex/.cortex cortex index /project
+```
+
+#### Connect to Claude via MCP
+
+Use the Docker-based command in your Claude Desktop config:
+
+```json
+{
+  "mcpServers": {
+    "cortex": {
+      "command": "docker",
+      "args": ["run", "--rm", "-i", "-v", "/path/to/your/project:/project", "-v", "cortex-data:/home/cortex/.cortex", "cortex", "serve"]
+    }
+  }
+}
+```
+
+> **Note:** Replace `/path/to/your/project` with the absolute path to the codebase you want to index. The `-i` flag is required for MCP stdio communication.
+
 ### From source
 
 ```bash
@@ -25,7 +71,7 @@ cargo build --release
 
 The binary will be at `target/release/cortex`.
 
-### Prerequisites
+#### Prerequisites (source build only)
 
 - [Rust](https://rustup.rs/) (latest stable)
 - For embedding/vector search features: `pkg-config` and `libssl-dev` (`openssl-devel` on Fedora)
@@ -78,6 +124,21 @@ Signature: fn get_parser(language: Language) -> Box<dyn Parser>
 ### 4. Connect to Claude via MCP
 
 Add Cortex to your Claude Desktop configuration (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or equivalent on Linux):
+
+**Option A — Docker (zero host deps):**
+
+```json
+{
+  "mcpServers": {
+    "cortex": {
+      "command": "docker",
+      "args": ["run", "--rm", "-i", "-v", "/path/to/your/project:/project", "-v", "cortex-data:/home/cortex/.cortex", "cortex", "serve"]
+    }
+  }
+}
+```
+
+**Option B — Local binary:**
 
 ```json
 {

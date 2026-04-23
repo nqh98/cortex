@@ -30,10 +30,10 @@ tree-sitter-python = "0.23"
 tree-sitter-javascript = "0.23"
 
 # Vector search (optional — requires pkg-config + libssl-dev)
-lancedb = { version = "0.10", optional = true }
+lancedb = { version = "0.27", optional = true }
 
 # Local embeddings (optional — requires pkg-config + libssl-dev)
-fastembed = { version = "4", optional = true }
+fastembed = { version = "5", optional = true }
 
 # File watching
 notify = "7"

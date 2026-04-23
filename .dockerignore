@@ -1,0 +1,11 @@
+target/
+.cortex/
+.git/
+.github/
+*.md
+!README.md
+docs/
+tests/
+Makefile
+.dockerignore
+Dockerfile
