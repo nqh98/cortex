@@ -1,4 +1,4 @@
-.PHONY: build test check fmt clippy clean run-index run-search run-serve
+.PHONY: build test check fmt clippy clean install run-index run-search run-serve
 
 build:
 	cargo build --release
@@ -22,6 +22,9 @@ clean:
 	rm -rf .cortex
 
 ci: check test lint
+
+install:
+	./install.sh --project-path "$(PWD)"
 
 # Development helpers
 run-index:

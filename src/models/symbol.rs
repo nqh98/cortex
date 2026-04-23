@@ -5,6 +5,7 @@ pub enum Language {
     Rust,
     Python,
     JavaScript,
+    TypeScript,
 }
 
 impl Language {
@@ -12,7 +13,8 @@ impl Language {
         match ext {
             "rs" => Some(Self::Rust),
             "py" => Some(Self::Python),
-            "js" | "ts" | "jsx" | "tsx" => Some(Self::JavaScript),
+            "js" | "jsx" => Some(Self::JavaScript),
+            "ts" | "tsx" => Some(Self::TypeScript),
             _ => None,
         }
     }
@@ -22,6 +24,7 @@ impl Language {
             Self::Rust => "rust",
             Self::Python => "python",
             Self::JavaScript => "javascript",
+            Self::TypeScript => "typescript",
         }
     }
 }

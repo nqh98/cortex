@@ -31,20 +31,40 @@ async fn run_migrations(pool: &DbPool) -> crate::error::Result<()> {
         .execute(pool)
         .await
         .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    // Migrate old schema: add project_root column if missing
+    let has_project_root: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('files') WHERE name = 'project_root'"
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false);
+
+    if !has_project_root {
+        sqlx::raw_sql("DROP TABLE IF EXISTS symbols").execute(pool).await
+            .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+        sqlx::raw_sql("DROP TABLE IF EXISTS files").execute(pool).await
+            .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+        sqlx::raw_sql(schema).execute(pool).await
+            .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+    }
+
     Ok(())
 }
 
 pub async fn upsert_file(
     pool: &DbPool,
+    project_root: &str,
     path: &str,
     hash: &str,
     language: &str,
 ) -> crate::error::Result<i64> {
     let result = sqlx::query_as::<_, (i64,)>(
-        "INSERT INTO files (path, hash, language) VALUES (?, ?, ?)
-         ON CONFLICT(path) DO UPDATE SET hash = ?, language = ?, last_indexed = CURRENT_TIMESTAMP
+        "INSERT INTO files (project_root, path, hash, language) VALUES (?, ?, ?, ?)
+         ON CONFLICT(project_root, path) DO UPDATE SET hash = ?, language = ?, last_indexed = CURRENT_TIMESTAMP
          RETURNING id"
     )
+    .bind(project_root)
     .bind(path)
     .bind(hash)
     .bind(language)
@@ -97,7 +117,7 @@ pub async fn search_symbols(
 ) -> crate::error::Result<Vec<SymbolRow>> {
     let pattern = format!("%{query}%");
     let rows = sqlx::query_as::<_, SymbolRow>(
-        "SELECT s.id, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature
+        "SELECT s.id, f.project_root, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature
          FROM symbols s JOIN files f ON s.file_id = f.id
          WHERE s.name LIKE ?1
          ORDER BY s.name
@@ -114,6 +134,7 @@ pub async fn search_symbols(
 #[derive(Debug, sqlx::FromRow)]
 pub struct SymbolRow {
     pub id: i64,
+    pub project_root: String,
     pub path: String,
     pub name: String,
     pub kind: String,
@@ -122,14 +143,64 @@ pub struct SymbolRow {
     pub signature: Option<String>,
 }
 
-pub async fn get_file_hash(pool: &DbPool, path: &str) -> crate::error::Result<Option<String>> {
+impl SymbolRow {
+    pub fn absolute_path(&self) -> String {
+        std::path::Path::new(&self.project_root)
+            .join(&self.path)
+            .to_string_lossy()
+            .to_string()
+    }
+}
+
+pub async fn get_file_hash(pool: &DbPool, project_root: &str, path: &str) -> crate::error::Result<Option<String>> {
     let result = sqlx::query_as::<_, (String,)>(
-        "SELECT hash FROM files WHERE path = ?"
+        "SELECT hash FROM files WHERE project_root = ? AND path = ?"
     )
+    .bind(project_root)
     .bind(path)
     .fetch_optional(pool)
     .await
     .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
 
     Ok(result.map(|r| r.0))
+}
+
+pub async fn delete_project(pool: &DbPool, project_root: &str) -> crate::error::Result<u64> {
+    let file_ids: Vec<(i64,)> = sqlx::query_as(
+        "SELECT id FROM files WHERE project_root = ?"
+    )
+    .bind(project_root)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    let count = file_ids.len();
+
+    sqlx::query("DELETE FROM symbols WHERE file_id IN (SELECT id FROM files WHERE project_root = ?)")
+        .bind(project_root)
+        .execute(pool)
+        .await
+        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    sqlx::query("DELETE FROM files WHERE project_root = ?")
+        .bind(project_root)
+        .execute(pool)
+        .await
+        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    Ok(count as u64)
+}
+
+pub async fn delete_all(pool: &DbPool) -> crate::error::Result<u64> {
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM files")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    sqlx::raw_sql("DELETE FROM symbols").execute(pool).await
+        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+    sqlx::raw_sql("DELETE FROM files").execute(pool).await
+        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    Ok(count.0 as u64)
 }

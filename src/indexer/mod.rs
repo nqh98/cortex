@@ -32,13 +32,20 @@ impl Indexer {
     pub async fn index_project(&self, project_path: &Path) -> Result<IndexStats> {
         info!("Indexing project: {}", project_path.display());
 
+        append_to_gitignore(project_path);
+
         let files = walker::walk_directory(project_path)?;
         info!("Found {} files to index", files.len());
+
+        let project_root = project_path.to_string_lossy().to_string();
 
         let mut stats = IndexStats::default();
 
         for file_entry in &files {
-            match self.index_file(&file_entry.path, file_entry.language).await {
+            let relative = file_entry.path.strip_prefix(project_path)
+                .unwrap_or(&file_entry.path);
+
+            match self.index_file(&project_root, relative, &file_entry.path, file_entry.language).await {
                 Ok(IndexFileResult::New(symbols)) => {
                     stats.files_indexed += 1;
                     stats.symbols_found += symbols;
@@ -68,47 +75,55 @@ impl Indexer {
         Ok(stats)
     }
 
-    pub async fn index_single_file(&self, path: &Path, language: Language) -> Result<usize> {
-        match self.index_file(path, language).await? {
+    pub async fn index_single_file(&self, project_path: &Path, path: &Path, language: Language) -> Result<usize> {
+        let project_root = project_path.to_string_lossy().to_string();
+        let relative = path.strip_prefix(project_path).unwrap_or(path);
+        match self.index_file(&project_root, relative, path, language).await? {
             IndexFileResult::New(n) => Ok(n),
             IndexFileResult::Unchanged => Ok(0),
             IndexFileResult::Skipped => Ok(0),
         }
     }
 
-    async fn index_file(&self, path: &Path, language: Language) -> Result<IndexFileResult> {
-        let content = tokio::fs::read_to_string(path).await?;
+    async fn index_file(
+        &self,
+        project_root: &str,
+        relative_path: &Path,
+        absolute_path: &Path,
+        language: Language,
+    ) -> Result<IndexFileResult> {
+        let content = tokio::fs::read_to_string(absolute_path).await?;
 
         // Check file size
         let max_size = (self.config.indexing.max_file_size_kb * 1024) as usize;
         if content.len() > max_size {
-            debug!("Skipping large file: {}", path.display());
+            debug!("Skipping large file: {}", absolute_path.display());
             return Ok(IndexFileResult::Skipped);
         }
 
         let hash = compute_hash(&content);
-        let path_str = path.to_string_lossy().to_string();
+        let path_str = relative_path.to_string_lossy().to_string();
 
         // Check if file has changed
-        let existing_hash = db::get_file_hash(&self.pool, &path_str).await?;
+        let existing_hash = db::get_file_hash(&self.pool, project_root, &path_str).await?;
         if existing_hash.as_deref() == Some(&hash) {
-            debug!("Unchanged: {}", path.display());
+            debug!("Unchanged: {}", relative_path.display());
             return Ok(IndexFileResult::Unchanged);
         }
 
         // Parse the file
         let parser = parser::get_parser(language);
-        let symbols = parser.parse(&content, path);
+        let symbols = parser.parse(&content, absolute_path);
 
         let symbol_count = symbols.len();
 
         // Store in database
-        let file_id = db::upsert_file(&self.pool, &path_str, &hash, language.as_str()).await?;
+        let file_id = db::upsert_file(&self.pool, project_root, &path_str, &hash, language.as_str()).await?;
         db::insert_symbols(&self.pool, file_id, &symbols).await?;
 
         debug!(
             "Indexed {}: {} symbols",
-            path.display(),
+            relative_path.display(),
             symbol_count
         );
 
@@ -135,4 +150,25 @@ fn compute_hash(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+fn append_to_gitignore(project_path: &Path) {
+    let gitignore_path = project_path.join(".gitignore");
+    let entry = ".cortex/";
+
+    let existing = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+    if existing.lines().any(|line| line.trim() == entry) {
+        return;
+    }
+
+    let content = if existing.is_empty() || !existing.ends_with('\n') {
+        format!("\n{entry}\n")
+    } else {
+        format!("{entry}\n")
+    };
+
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&gitignore_path) {
+        let _ = f.write_all(content.as_bytes());
+    }
 }

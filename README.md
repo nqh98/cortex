@@ -17,49 +17,34 @@ A local-first code context engine that indexes your source code, extracts semant
 
 ### Docker (recommended — no host dependencies)
 
-Build the image (includes all features — embeddings, vector search, etc.):
+One command to build, configure, and auto-connect to Claude via MCP:
 
 ```bash
-docker build -t cortex .
+./install.sh --project-path /path/to/your/project
 ```
 
-Everything is self-contained inside the container. No Rust, no system libraries, nothing touches your OS.
+This will:
+1. Build the Docker image (includes all features — embeddings, vector search, etc.)
+2. Create a persistent Docker volume for the index
+3. Auto-detect your Claude config and register Cortex as an MCP server
 
-#### Index a project
+Everything is self-contained inside the container. No Rust, no system libraries, nothing touches your OS. Restart Claude after installation for changes to take effect.
+
+#### Manual Docker commands
+
+If you prefer to run commands manually:
 
 ```bash
+# Index a project
 docker run --rm -v /path/to/your/project:/project cortex index /project
-```
 
-#### Search symbols
-
-```bash
+# Search symbols
 docker run --rm -v /path/to/your/project:/project cortex search "handler"
-```
 
-#### Persist the index between runs
-
-```bash
+# Persist the index between runs
 docker volume create cortex-data
 docker run --rm -v /path/to/your/project:/project -v cortex-data:/home/cortex/.cortex cortex index /project
 ```
-
-#### Connect to Claude via MCP
-
-Use the Docker-based command in your Claude Desktop config:
-
-```json
-{
-  "mcpServers": {
-    "cortex": {
-      "command": "docker",
-      "args": ["run", "--rm", "-i", "-v", "/path/to/your/project:/project", "-v", "cortex-data:/home/cortex/.cortex", "cortex", "serve"]
-    }
-  }
-}
-```
-
-> **Note:** Replace `/path/to/your/project` with the absolute path to the codebase you want to index. The `-i` flag is required for MCP stdio communication.
 
 ### From source
 
@@ -200,12 +185,12 @@ cortex watch <PATH>       Watch a directory and re-index on changes
 ## How It Works
 
 ```
-┌─────────────┐    ┌────────────┐    ┌────────────┐    ┌─────────┐
-│  Directory   │───▶│  Scanner   │───▶│   Parser   │───▶│  SQLite │
-│  Walker      │    │ (.gitignore)│   │ (tree-sitter)│   │  Index  │
-└─────────────┘    └────────────┘    └────────────┘    └─────────┘
+┌─────────────┐    ┌─────────────┐    ┌──────────────┐    ┌─────────┐
+│  Directory  │───▶│  Scanner    │───▶│   Parser     │───▶│  SQLite │
+│  Walker     │    │ (.gitignore)│    │ (tree-sitter)│    │  Index  │
+└─────────────┘    └─────────────┘    └──────────────┘    └─────────┘
                                                             │
-                                       ┌───────────────────┘
+                                       ┌────────────────────┘
                                        ▼
                                   ┌─────────┐
                                   │   MCP   │◀──── Claude / LLM

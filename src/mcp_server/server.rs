@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::indexer::db;
+use crate::indexer::{db, Indexer};
 use crate::query::{context, search};
 use crate::scanner::walker;
 use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
@@ -36,8 +36,8 @@ pub struct SearchSymbolsRequest {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetCodeContextRequest {
-    #[schemars(description = "Path to the source file")]
-    pub file_path: String,
+    #[schemars(description = "Relative path to the source file (e.g. src/parser/mod.rs). Optional — if omitted, returns the first matching symbol by name.")]
+    pub file_path: Option<String>,
     #[schemars(description = "Name of the symbol to retrieve")]
     pub symbol_name: String,
 }
@@ -48,6 +48,12 @@ pub struct ListDirectoryRequest {
     pub path: String,
     #[schemars(description = "Maximum depth of the tree (default: 3)")]
     pub max_depth: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct IndexProjectRequest {
+    #[schemars(description = "Absolute path to the project directory to index")]
+    pub path: String,
 }
 
 #[tool(tool_box)]
@@ -82,7 +88,7 @@ impl CortexServer {
         }
     }
 
-    #[tool(description = "Get the source code for a specific symbol. Returns the full implementation with line numbers.")]
+    #[tool(description = "Get the source code for a symbol by name. Optionally provide a file path to disambiguate. Returns the full implementation with line numbers.")]
     async fn get_code_context(
         &self,
         #[tool(aggr)] request: GetCodeContextRequest,
@@ -92,7 +98,7 @@ impl CortexServer {
             Err(e) => return format!("Error connecting to database: {e}"),
         };
 
-        match context::get_code_context(&pool, &request.file_path, &request.symbol_name).await {
+        match context::get_code_context(&pool, request.file_path.as_deref(), &request.symbol_name).await {
             Ok(ctx) => {
                 let mut result = format!("--- {} ({}) ---\n", ctx.symbol_name, ctx.kind);
                 result.push_str(&format!(
@@ -125,6 +131,33 @@ impl CortexServer {
             Err(e) => format!("Error listing directory: {e}"),
         }
     }
+
+    #[tool(description = "Index or re-index a project directory. Call this after code changes to refresh the symbol index before searching.")]
+    async fn index_project(
+        &self,
+        #[tool(aggr)] request: IndexProjectRequest,
+    ) -> String {
+        let path = Path::new(&request.path);
+        if !path.exists() {
+            return format!("Directory not found: {}", request.path);
+        }
+
+        let indexer = match Indexer::new(&self.config).await {
+            Ok(i) => i,
+            Err(e) => return format!("Error creating indexer: {e}"),
+        };
+
+        match indexer.index_project(path).await {
+            Ok(stats) => format!(
+                "Indexed {} files ({} symbols, {} unchanged, {} failed)",
+                stats.files_indexed,
+                stats.symbols_found,
+                stats.files_unchanged,
+                stats.files_failed,
+            ),
+            Err(e) => format!("Error indexing project: {e}"),
+        }
+    }
 }
 
 #[tool(tool_box)]
@@ -137,7 +170,7 @@ impl ServerHandler for CortexServer {
             },
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             instructions: Some(
-                "Cortex is a local code context engine. Use search_symbols to find code, get_code_context to read implementations, and list_directory_structure to explore projects.".into(),
+                "Cortex is a local code context engine. Use index_project to index or refresh a project, search_symbols to find code, get_code_context to read implementations, and list_directory_structure to explore projects.".into(),
             ),
             ..Default::default()
         }

@@ -1,18 +1,47 @@
 use crate::models::Language;
 use std::path::Path;
 
+const IGNORED_DIRS: &[&str] = &[
+    "target",
+    "node_modules",
+    ".cortex",
+    "dist",
+    "build",
+    "out",
+    "vendor",
+    "__pycache__",
+    ".venv",
+    "venv",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    "coverage",
+    ".next",
+    ".nuxt",
+    ".cache",
+];
+
 pub struct WalkResult {
     pub path: std::path::PathBuf,
     pub language: Language,
 }
 
-pub fn walk_directory(root: &Path) -> crate::error::Result<Vec<WalkResult>> {
-    let mut results = Vec::new();
-    let walker = ignore::WalkBuilder::new(root)
+fn build_walker(root: &Path) -> ignore::WalkBuilder {
+    let mut builder = ignore::WalkBuilder::new(root);
+    builder
         .hidden(true)
         .git_ignore(true)
         .git_global(true)
-        .build();
+        .git_exclude(true);
+    for dir in IGNORED_DIRS {
+        builder.add_ignore(dir);
+    }
+    builder
+}
+
+pub fn walk_directory(root: &Path) -> crate::error::Result<Vec<WalkResult>> {
+    let mut results = Vec::new();
+    let walker = build_walker(root).build();
 
     for entry in walker {
         let entry = entry.map_err(|e| crate::error::CortexError::Io(std::io::Error::new(
@@ -46,11 +75,7 @@ pub fn directory_tree(root: &Path, max_depth: Option<usize>) -> crate::error::Re
         .unwrap_or(".");
     lines.push(root_name.to_string());
 
-    let walker = ignore::WalkBuilder::new(root)
-        .hidden(true)
-        .git_ignore(true)
-        .git_global(true)
-        .build();
+    let walker = build_walker(root).build();
 
     let mut entries: Vec<_> = walker
         .filter_map(|e| e.ok())

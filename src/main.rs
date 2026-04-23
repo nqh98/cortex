@@ -29,10 +29,10 @@ enum Commands {
     },
     /// Get code context for a symbol
     Context {
-        /// File path
-        file: String,
         /// Symbol name
         symbol: String,
+        /// File path (optional, used to disambiguate)
+        file: Option<String>,
     },
     /// Start the MCP server
     Serve,
@@ -40,6 +40,11 @@ enum Commands {
     Watch {
         /// Path to the project directory
         path: String,
+    },
+    /// Clear the index (all projects, or a specific project)
+    Reset {
+        /// Path to a specific project to reset (omit to clear all)
+        path: Option<String>,
     },
 }
 
@@ -99,9 +104,9 @@ async fn run(cli: Cli) -> cortex::error::Result<()> {
                 }
             }
         }
-        Commands::Context { file, symbol } => {
+        Commands::Context { symbol, file } => {
             let pool = db::init_pool(&format!("sqlite:{}", config.database.path)).await?;
-            let ctx = context::get_code_context(&pool, &file, &symbol).await?;
+            let ctx = context::get_code_context(&pool, file.as_deref(), &symbol).await?;
             println!("--- {} ({}) ---", ctx.symbol_name, ctx.kind);
             println!("File: {} lines {}-{}", ctx.file_path, ctx.start_line, ctx.end_line);
             if let Some(sig) = &ctx.signature {
@@ -127,6 +132,24 @@ async fn run(cli: Cli) -> cortex::error::Result<()> {
 
             // Watch for changes
             cortex::watcher::file_watcher::watch_project(&project_path, &config).await?;
+        }
+        Commands::Reset { path } => {
+            let pool = db::init_pool(&format!("sqlite:{}", config.database.path)).await?;
+
+            if let Some(p) = path {
+                let project_path = Path::new(&p).canonicalize().map_err(|e| {
+                    cortex::error::CortexError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("Directory not found: {p} ({e})"),
+                    ))
+                })?;
+                let root = project_path.to_string_lossy().to_string();
+                let count = db::delete_project(&pool, &root).await?;
+                println!("Cleared index for {} ({} files removed)", root, count);
+            } else {
+                let count = db::delete_all(&pool).await?;
+                println!("Cleared entire index ({} files removed)", count);
+            }
         }
     }
 

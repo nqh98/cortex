@@ -9,7 +9,7 @@ pub async fn search_symbols(
 
     let rows = if let Some(kind) = kind_filter {
         sqlx::query_as::<_, SymbolRow>(
-            "SELECT s.id, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature
+            "SELECT s.id, f.project_root, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature
              FROM symbols s JOIN files f ON s.file_id = f.id
              WHERE s.name LIKE ?1 AND s.kind = ?2
              ORDER BY s.name
@@ -21,7 +21,7 @@ pub async fn search_symbols(
         .await
     } else {
         sqlx::query_as::<_, SymbolRow>(
-            "SELECT s.id, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature
+            "SELECT s.id, f.project_root, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature
              FROM symbols s JOIN files f ON s.file_id = f.id
              WHERE s.name LIKE ?1
              ORDER BY s.name
@@ -40,7 +40,7 @@ pub async fn search_by_kind(
     kind: &str,
 ) -> crate::error::Result<Vec<SymbolRow>> {
     sqlx::query_as::<_, SymbolRow>(
-        "SELECT s.id, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature
+        "SELECT s.id, f.project_root, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature
          FROM symbols s JOIN files f ON s.file_id = f.id
          WHERE s.kind = ?1
          ORDER BY s.name

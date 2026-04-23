@@ -4,32 +4,51 @@ use std::path::Path;
 
 pub async fn get_code_context(
     pool: &DbPool,
-    file_path: &str,
+    file_path: Option<&str>,
     symbol_name: &str,
 ) -> Result<CodeContext> {
-    // Canonicalize the input path for matching
-    let canonical = Path::new(file_path).canonicalize().ok();
-    let canonical_str = canonical.as_deref().and_then(|p| p.to_str());
+    // Find the symbol in the database by name
+    let mut symbols = db::search_symbols(pool, symbol_name)
+        .await?;
 
-    // Find the symbol in the database
-    let symbols = db::search_symbols(pool, symbol_name)
-        .await?
-        .into_iter()
-        .filter(|s| {
-            s.path == file_path
-                || canonical_str.map_or(false, |c| s.path == c)
-                || s.path.ends_with(file_path)
-        })
-        .collect::<Vec<_>>();
+    // If file_path provided, filter and rank matches
+    let symbol = if let Some(fp) = file_path {
+        let canonical = Path::new(fp).canonicalize().ok();
+        let canonical_str = canonical.as_deref().and_then(|p| p.to_str());
+        let filename = Path::new(fp).file_name().and_then(|n| n.to_str()).unwrap_or(fp);
 
-    let symbol = symbols
-        .into_iter()
-        .next()
-        .ok_or_else(|| CortexError::SymbolNotFound(format!("{} in {}", symbol_name, file_path)))?;
+        // Rank: exact > ends_with > absolute match > filename
+        symbols.sort_by(|a, b| {
+            let score = |s: &db::SymbolRow| -> u8 {
+                if s.path == fp { 4 }
+                else if s.path.ends_with(fp) { 3 }
+                else if canonical_str.map_or(false, |c| s.absolute_path() == c) { 2 }
+                else if Path::new(&s.path).file_name().and_then(|n| n.to_str()) == Some(filename) { 1 }
+                else { 0 }
+            };
+            score(b).cmp(&score(a))
+        });
 
-    // Read the file
-    let content = std::fs::read_to_string(Path::new(&symbol.path))
-        .map_err(|_| CortexError::FileNotFound(symbol.path.clone()))?;
+        symbols.into_iter()
+            .filter(|s| {
+                s.path == fp
+                    || s.path.ends_with(fp)
+                    || canonical_str.map_or(false, |c| s.absolute_path() == c)
+                    || Path::new(&s.path).file_name().and_then(|n| n.to_str()) == Some(filename)
+            })
+            .next()
+            .ok_or_else(|| CortexError::SymbolNotFound(format!("{} in {}", symbol_name, fp)))?
+    } else {
+        // No file_path — return first match by name
+        symbols.into_iter()
+            .next()
+            .ok_or_else(|| CortexError::SymbolNotFound(symbol_name.to_string()))?
+    };
+
+    // Read the file using the absolute path
+    let abs_path = symbol.absolute_path();
+    let content = std::fs::read_to_string(Path::new(&abs_path))
+        .map_err(|_| CortexError::FileNotFound(abs_path.clone()))?;
 
     let lines: Vec<&str> = content.lines().collect();
     let start = (symbol.start_line as usize).saturating_sub(1);

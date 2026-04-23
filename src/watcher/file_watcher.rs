@@ -63,7 +63,7 @@ pub async fn watch_project(project_path: &Path, config: &Config) -> crate::error
                     for path in pending.drain(..) {
                         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                         if let Some(lang) = Language::from_extension(ext) {
-                            match indexer.index_single_file(&path, lang).await {
+                            match indexer.index_single_file(project_path, &path, lang).await {
                                 Ok(n) => info!("Re-indexed {}: {} symbols", path.display(), n),
                                 Err(e) => warn!("Failed to re-index {}: {}", path.display(), e),
                             }
