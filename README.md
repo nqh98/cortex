@@ -20,88 +20,22 @@ A local-first code context engine that indexes your source code, extracts semant
 
 ## Installation
 
-### Docker (recommended — no host dependencies)
-
-#### Option 1: Easy one-command install with wrapper script
-
-This is the simplest method — it installs a wrapper script that abstracts all Docker complexity:
-
-```bash
-./install.sh --project-path /path/to/your/project --install-wrapper
-```
-
-This will:
-1. Build the Docker image (includes all features — embeddings, vector search, etc.)
-2. Create a persistent Docker volume for the index
-3. Install the `cortex-docker` wrapper to `~/.local/bin`
-4. Auto-detect your Claude config and register Cortex as an MCP server
-
-After installation, you can run Cortex commands easily:
-
-```bash
-cortex-docker index ./my-project
-cortex-docker search "handler"
-cortex-docker context src/main.rs main
-cortex-docker watch .
-cortex-docker serve  # For MCP
-```
-
-**Multi-repository support:**
-- Each repository is stored with strict data isolation
-- Use `cortex-docker list` to see all indexed repositories
-- Use `--repo <name>` to work with a specific repository
-- The most recently indexed repository becomes the default
-
-#### Option 2: Basic install
-
-```bash
-./install.sh --project-path /path/to/your/project
-```
-
-This will:
-1. Build the Docker image
-2. Create a persistent Docker volume for the index
-3. Auto-detect your Claude config and register Cortex as an MCP server
-
-#### Option 3: Multi-project setup
-
-For multiple projects with separate indexes:
-
-```bash
-./install.sh --project-path /path/to/project1 --project-name project1 --install-wrapper
-./install.sh --project-path /path/to/project2 --project-name project2 --install-wrapper
-```
-
-Each project gets its own Docker volume and MCP server entry.
-
-#### Manual Docker commands
-
-If you prefer to run commands manually:
-
-```bash
-# Index a project
-docker run --rm -v /path/to/your/project:/project -v cortex-data:/home/cortex/.cortex cortex index /project
-
-# Search symbols
-docker run --rm -v /path/to/your/project:/project -v cortex-data:/home/cortex/.cortex cortex search "handler"
-
-# Persist the index between runs
-docker volume create cortex-data
-```
-
-### From source
-
 ```bash
 git clone https://github.com/<your-user>/cortex.git
 cd cortex
-cargo build --release
+./install.sh
 ```
 
-The binary will be at `target/release/cortex`.
+This will:
+1. Build the binary with `cargo build --release`
+2. Install `cortex` to `~/.local/bin`
+3. Create `~/.cortex/` for config and data
+4. Auto-detect your Claude config and register Cortex as an MCP server
 
-#### Prerequisites (source build only)
+### Prerequisites
 
 - [Rust](https://rustup.rs/) (latest stable)
+- `jq` (for MCP config setup)
 - For embedding/vector search features: `pkg-config` and `libssl-dev` (`openssl-devel` on Fedora)
 
 ## Quick Start
@@ -129,74 +63,35 @@ struct PythonParser (src/parser/python_parser.rs:5-5)
 struct JsParser (src/parser/js_parser.rs:5-5)
 ```
 
-**Using the Docker wrapper script:**
-
-```bash
-cortex-docker search "handler"
-cortex-docker search "Parser" --kind struct
-```
-
 ### 3. Get code context
 
 ```bash
-cortex context src/parser/mod.rs get_parser
+cortex context get_parser
 ```
 
 ```
 --- get_parser (function) ---
-File: src/parser/mod.rs lines 13-19
+File: src/parser/mod.rs lines 14-21
 Signature: fn get_parser(language: Language) -> Box<dyn Parser>
 
-  13 | pub fn get_parser(language: Language) -> Box<dyn Parser> {
-  14 |     match language {
-  15 |         Language::Rust => Box::new(rust_parser::RustParser),
-  16 |         Language::Python => Box::new(python_parser::PythonParser),
-  17 |         Language::JavaScript => Box::new(js_parser::JsParser),
-  18 |     }
-  19 | }
+pub fn get_parser(language: Language) -> Box<dyn Parser> {
+    match language {
+        Language::Rust => Box::new(rust_parser::RustParser),
+        Language::Python => Box::new(python_parser::PythonParser),
+        ...
+    }
+}
 ```
 
 ### 4. Connect to Claude via MCP
 
-Add Cortex to your Claude Desktop configuration (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, or equivalent on Linux):
-
-**Option A — Using the wrapper script (recommended):**
+`./install.sh` configures this automatically. To set it up manually, add to your Claude config:
 
 ```json
 {
   "mcpServers": {
     "cortex": {
-      "command": "/home/username/.local/bin/cortex-docker",
-      "args": ["serve"],
-      "env": {
-        "CORTEX_PROJECT": "/path/to/your/project",
-        "CORTEX_VOLUME": "cortex-data"
-      }
-    }
-  }
-}
-```
-
-**Option B — Direct Docker command:**
-
-```json
-{
-  "mcpServers": {
-    "cortex": {
-      "command": "docker",
-      "args": ["run", "--rm", "-i", "-v", "/path/to/your/project:/project", "-v", "cortex-data:/home/cortex/.cortex", "cortex", "serve"]
-    }
-  }
-}
-```
-
-**Option B — Local binary:**
-
-```json
-{
-  "mcpServers": {
-    "cortex": {
-      "command": "/path/to/cortex",
+      "command": "/home/username/.local/bin/cortex",
       "args": ["serve"]
     }
   }
@@ -217,158 +112,29 @@ Claude will then have access to eight tools:
 
 ```bash
 cortex watch ./my-project
-# Or with Docker:
-cortex-docker watch ./my-project
 ```
 
 Automatically re-indexes files when you save them.
 
-## Docker Usage Options
+## Configuration
 
-### 1. Wrapper Script (Recommended)
-
-The wrapper script provides a simple interface:
-
-```bash
-./cortex-docker.sh <command> [args...]
-
-# Or if installed to ~/.local/bin
-cortex-docker <command> [args...]
-
-# Commands:
-cortex-docker index <path>        # Index a project
-cortex-docker search <query>      # Search for symbols
-cortex-docker context <file> <symbol>  # Get source code
-cortex-docker serve               # Start MCP server
-cortex-docker watch <path>        # Watch for changes
-cortex-docker shell               # Open shell in container
-cortex-docker clean               # Remove data volume
-cortex-docker help                # Show help
-```
-
-### 2. Makefile Targets
-
-Simple commands using make:
-
-```bash
-make docker-build        # Build Docker image
-make docker-index        # Index current directory
-make docker-search Q='query'  # Search
-make docker-serve        # Start MCP server
-make docker-watch        # Watch directory
-make docker-shell        # Open shell in container
-make docker-clean        # Remove data volume
-make help                # Show all targets
-```
-
-### 3. Docker Compose
-
-For users who prefer Docker Compose:
-
-```bash
-# Build and run
-docker compose build
-docker compose run --rm cortex index /project
-docker compose run --rm cortex search "handler"
-
-# Multi-project setup
-docker compose -f docker-compose.multi-project.yml run --rm cortex-project1 index /project
-```
-
-### 4. Direct Docker Commands
-
-For full control:
-
-```bash
-docker build -t cortex .
-docker run --rm -v /path/to/project:/project -v cortex-data:/home/cortex/.cortex cortex index /project
-```
-
-## Multi-Repository Management
-
-Cortex supports indexing multiple repositories with strict data isolation:
-
-### Listing Repositories
-
-```bash
-cortex-docker list
-# or
-cortex-docker repos
-```
-
-Output shows all indexed repositories with the current one marked with `*`:
+All data is stored in `~/.cortex/`:
 
 ```
-Indexed repositories:
-
-    my-api
-      Path: /path/to/my-api
-      Status: Indexed
-  * frontend (current)
-      Path: /path/to/frontend
-      Status: Indexed
+~/.cortex/
+├── config.toml     # Configuration file
+└── db.sqlite       # Symbol index database
 ```
 
-### Conflict Detection
-
-If you try to index a repository with a name that already exists but points to a different path, Cortex will warn you:
-
-```bash
-$ cortex-docker index /different/path --name my-api
-Warning: Repository 'my-api' already exists at: /original/path
-Warning: You're trying to index: /different/path
-
-Options:
-  1. Overwrite the existing repository (will lose data)
-  2. Use a different name with --name <name>
-  3. Cancel
-Choose an option [1/2/3]:
-```
-
-To skip the confirmation and force overwrite, use the `--force` flag:
-
-```bash
-cortex-docker index /different/path --name my-api --force
-```
-
-### Working with Specific Repositories
-
-Use the `--repo` (or `-r`) flag to specify which repository to use:
-
-```bash
-# Index with a custom name
-cortex-docker index /path/to/project --name my-api
-
-# Search in a specific repository
-cortex-docker search "handler" --repo my-api
-
-# Get context from a specific repository
-cortex-docker context get_handler --repo my-api
-
-# Clean a specific repository
-cortex-docker clean --repo my-api
-```
-
-### Cleaning Up
-
-```bash
-# Clean a specific repository
-cortex-docker clean --repo my-api
-
-# Clean all repositories
-cortex-docker clean --all
-
-# Clean without specifying (prompts for confirmation)
-cortex-docker clean
-```
+Default `config.toml`:
 
 ```toml
 [database]
-path = ".cortex/db.sqlite"
+path = "/home/username/.cortex/db.sqlite"
 
 [indexing]
 max_file_size_kb = 1024
-supported_extensions = ["rs", "py", "js", "ts"]
+supported_extensions = ["rs", "py", "js", "ts", "tsx", "jsx"]
 
 [embeddings]
 enabled = false
@@ -510,9 +276,10 @@ Error codes:
 ```
 cortex index <PATH>       Index a project directory
 cortex search <QUERY>     Search for symbols (use --kind to filter)
-cortex context <FILE> <SYMBOL>  Get source code for a symbol
+cortex context <SYMBOL>   Get source code for a symbol
 cortex serve              Start the MCP server (stdio transport)
 cortex watch <PATH>       Watch a directory and re-index on changes
+cortex reset [PATH]       Clear index (all, or for a specific path)
 ```
 
 ## How It Works

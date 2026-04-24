@@ -32,11 +32,26 @@ pub struct WatcherConfig {
     pub debounce_ms: u64,
 }
 
+/// Returns the global config directory: ~/.cortex/
+fn cortex_dir() -> PathBuf {
+    dirs_home().join(".cortex")
+}
+
+fn dirs_home() -> PathBuf {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/tmp"))
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             database: DatabaseConfig {
-                path: ".cortex/db.sqlite".to_string(),
+                path: cortex_dir()
+                    .join("db.sqlite")
+                    .to_string_lossy()
+                    .to_string(),
             },
             indexing: IndexingConfig {
                 max_file_size_kb: 1024,
@@ -63,22 +78,12 @@ impl Default for Config {
 
 impl Config {
     pub fn default_config_path() -> PathBuf {
-        Path::new(".cortex").join("config.toml")
+        cortex_dir().join("config.toml")
     }
 
     pub fn load(path: &Path) -> crate::error::Result<Self> {
-        // Try the provided path first
         if path.exists() {
             let content = std::fs::read_to_string(path)
-                .map_err(|e| crate::error::CortexError::Config(e.to_string()))?;
-            return toml::from_str(&content)
-                .map_err(|e| crate::error::CortexError::Config(e.to_string()));
-        }
-
-        // Fallback to .cortex/config.toml
-        let default_path = Self::default_config_path();
-        if default_path.exists() {
-            let content = std::fs::read_to_string(&default_path)
                 .map_err(|e| crate::error::CortexError::Config(e.to_string()))?;
             return toml::from_str(&content)
                 .map_err(|e| crate::error::CortexError::Config(e.to_string()));
@@ -92,7 +97,6 @@ impl Config {
         let content = toml::to_string_pretty(self)
             .map_err(|e| crate::error::CortexError::Config(e.to_string()))?;
 
-        // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| crate::error::CortexError::Config(e.to_string()))?;

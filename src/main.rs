@@ -67,6 +67,12 @@ async fn main() {
 
 async fn run(cli: Cli) -> cortex::error::Result<()> {
     let config_path = Config::default_config_path();
+
+    // Ensure ~/.cortex/ exists
+    if let Some(parent) = config_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
     let config = Config::load(&config_path)?;
 
     // Auto-save default config if it doesn't exist
