@@ -20,7 +20,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
-      - run: cargo check --all-features
+      - name: Cargo check (with retries for ort-sys CDN flakiness)
+        run: |
+          for i in 1 2 3; do
+            cargo check --all-features && exit 0
+            echo "Attempt $i failed, retrying in 15s..."
+            sleep 15
+          done
+          exit 1
 
   test:
     name: Test
@@ -31,7 +38,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
-      - run: cargo test --all-features
+      - name: Cargo test (with retries for ort-sys CDN flakiness)
+        run: |
+          for i in 1 2 3; do
+            cargo test --all-features && exit 0
+            echo "Attempt $i failed, retrying in 15s..."
+            sleep 15
+          done
+          exit 1
 
   fmt:
     name: Formatting
@@ -54,7 +68,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
-      - run: cargo clippy --all-features -- -D warnings
+      - name: Cargo clippy (with retries for ort-sys CDN flakiness)
+        run: |
+          for i in 1 2 3; do
+            cargo clippy --all-features -- -D warnings && exit 0
+            echo "Attempt $i failed, retrying in 15s..."
+            sleep 15
+          done
+          exit 1
 
   build-release:
     name: Build (release)
@@ -65,4 +86,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
-      - run: cargo build --release --all-features
+      - name: Cargo build release (with retries for ort-sys CDN flakiness)
+        run: |
+          for i in 1 2 3; do
+            cargo build --release --all-features && exit 0
+            echo "Attempt $i failed, retrying in 15s..."
+            sleep 15
+          done
+          exit 1
