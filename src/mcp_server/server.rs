@@ -403,11 +403,10 @@ impl CortexServer {
             }
         };
 
-        let total_count =
-            match search::count_symbols(pool, &request.query, kind_filter).await {
-                Ok(c) => c as u32,
-                Err(_) => results.len() as u32, // Fallback to returned count
-            };
+        let total_count = match search::count_symbols(pool, &request.query, kind_filter).await {
+            Ok(c) => c as u32,
+            Err(_) => results.len() as u32, // Fallback to returned count
+        };
 
         let has_more = (offset + limit) < total_count as usize;
 
@@ -731,20 +730,26 @@ impl CortexServer {
         let limit = request.limit.unwrap_or(50).min(200) as usize;
         let ext = request.file_extension.as_deref();
 
-        let matches =
-            match content::search_content(pool, &project_root, &request.pattern, ext, limit).await
-            {
-                Ok(m) => m,
-                Err(e) => {
-                    return serde_json::json!({
-                        "error": {
-                            "code": "search_error",
-                            "message": format!("Content search failed: {e}")
-                        }
-                    })
-                    .to_string()
-                }
-            };
+        let matches = match content::search_content(
+            pool,
+            &project_root,
+            &request.pattern,
+            ext,
+            limit,
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "search_error",
+                        "message": format!("Content search failed: {e}")
+                    }
+                })
+                .to_string()
+            }
+        };
 
         let total_count = matches.len() as u32;
         let has_more = total_count >= limit as u32;

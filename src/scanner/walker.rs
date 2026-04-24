@@ -45,9 +45,8 @@ pub fn walk_directory(root: &Path) -> crate::error::Result<Vec<WalkResult>> {
     let walker = build_walker(root).build();
 
     for entry in walker {
-        let entry = entry.map_err(|e| {
-            crate::error::CortexError::Io(std::io::Error::other(e.to_string()))
-        })?;
+        let entry = entry
+            .map_err(|e| crate::error::CortexError::Io(std::io::Error::other(e.to_string())))?;
 
         if !entry.file_type().map_or(false, |ft| ft.is_file()) {
             continue;
@@ -78,9 +77,8 @@ pub fn directory_tree_structured(
     let mut entries: Vec<FileEntry> = Vec::new();
 
     for entry in walker {
-        let entry = entry.map_err(|e| {
-            crate::error::CortexError::Io(std::io::Error::other(e.to_string()))
-        })?;
+        let entry = entry
+            .map_err(|e| crate::error::CortexError::Io(std::io::Error::other(e.to_string())))?;
 
         let depth = entry.depth();
         if depth > max_depth {
@@ -173,9 +171,8 @@ pub fn list_files_structured(
             break;
         }
 
-        let entry = entry.map_err(|e| {
-            crate::error::CortexError::Io(std::io::Error::other(e.to_string()))
-        })?;
+        let entry = entry
+            .map_err(|e| crate::error::CortexError::Io(std::io::Error::other(e.to_string())))?;
 
         // Skip the root directory itself
         if entry.path() == root {
