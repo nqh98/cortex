@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Returns the per-project database path: `<project_root>/.cortex/index.sqlite`
+pub fn project_db_path(project_root: &Path) -> PathBuf {
+    project_root.join(".cortex").join("index.sqlite")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub database: DatabaseConfig,
@@ -102,4 +107,38 @@ impl Config {
 
         Ok(())
     }
+}
+
+fn registry_path() -> PathBuf {
+    cortex_dir().join("projects.json")
+}
+
+pub fn register_project(project_root: &Path) {
+    let path_str = project_root.to_string_lossy().to_string();
+    let mut projects = load_registered_projects().unwrap_or_default();
+    if projects.contains(&path_str) {
+        return;
+    }
+    projects.push(path_str);
+    let _ = std::fs::create_dir_all(cortex_dir());
+    let json = serde_json::to_string_pretty(&projects).unwrap_or_default();
+    let _ = std::fs::write(registry_path(), json);
+}
+
+pub fn unregister_project(project_root: &str) {
+    let mut projects = load_registered_projects().unwrap_or_default();
+    projects.retain(|p| p != project_root);
+    let json = serde_json::to_string_pretty(&projects).unwrap_or_default();
+    let _ = std::fs::write(registry_path(), json);
+}
+
+pub fn load_registered_projects() -> crate::error::Result<Vec<String>> {
+    let path = registry_path();
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| crate::error::CortexError::Config(e.to_string()))?;
+    serde_json::from_str(&content)
+        .map_err(|e| crate::error::CortexError::Config(e.to_string()))
 }

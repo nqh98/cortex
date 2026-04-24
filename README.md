@@ -15,7 +15,6 @@ Works with <strong>Claude Code</strong>, <strong>Cline</strong>, <strong>Cursor<
 <p align="center">
 <a href="https://github.com/nqh98/cortex"><img src="https://img.shields.io/github/stars/nqh98/cortex?style=social" alt="GitHub stars" /></a>
 <img src="https://img.shields.io/github/license/nqh98/cortex" alt="License: MIT" />
-<img src="https://img.shields.io/badge/Rust-1.75+-orange" alt="Rust" />
 <img src="https://img.shields.io/badge/MCP-Protocol-green" alt="MCP" />
 <img src="https://img.shields.io/badge/SQLite-FTS5-blue" alt="SQLite" />
 </p>
@@ -49,7 +48,7 @@ Everything runs **locally** — no cloud services, no API keys, no data leaves y
 ## Features
 
 - **13 MCP tools** — symbol search, code retrieval, content grep, reference finding, import analysis, full-text search, and more
-- **Multi-language** — Rust, Python, JavaScript, TypeScript (including TSX/JSX)
+- **Multi-language** — Rust, Python, JavaScript, TypeScript, Java
 - **Auto-reindex** — detects stale indexes and re-indexes automatically before queries
 - **11 symbol kinds** — functions, structs, classes, interfaces, type aliases, enums, traits, impls, constants, modules, methods
 - **Import tracking** — stores import statements per file, supports outgoing/incoming dependency queries
@@ -57,22 +56,50 @@ Everything runs **locally** — no cloud services, no API keys, no data leaves y
 - **Reference finding** — finds all usages of a symbol across the project with classification (import, call, type usage)
 - **Content search** — regex grep across indexed files with context lines
 - **Document symbols** — lists all symbols in a file with parent-child hierarchy
-- **Multi-project** — index multiple repos in a single database, query them independently
+- **Per-project indexes** — each project stores its own index in `.cortex/index.sqlite` alongside the code
 
 ## Installation
 
+### Install modes
+
+Cortex supports two install modes: **global** and **local**.
+
+| | Global | Local |
+|---|---|---|
+| **Command** | `./install.sh` | `./install.sh local /path/to/project` |
+| **Binary** | `~/.local/bin/cortex` | `<project>/.cortex/bin/cortex` |
+| **Index** | `<project>/.cortex/index.sqlite` | `<project>/.cortex/index.sqlite` |
+| **MCP config** | `~/.claude/settings.json` | `<project>/.claude/settings.local.json` |
+| **CLAUDE.md** | `~/.claude/CLAUDE.md` | `<project>/CLAUDE.md` |
+| **Scope** | All projects | Single project |
+| **Uninstall** | Manual cleanup | `rm -rf .cortex CLAUDE.md` |
+
+### Binary sources
+
+No Rust required — Cortex can install from a prebuilt binary:
+
 ```bash
-git clone https://github.com/nqh98/cortex.git
-cd cortex
+# Download latest prebuilt (no Rust needed)
 ./install.sh
+./install.sh local .
+
+# Download specific version
+./install.sh --version v0.2.0
+./install.sh local . --version v0.2.0
+
+# Use a custom binary URL
+./install.sh --url https://example.com/cortex-linux-x86_64.tar.gz
+
+# Build from source (requires Rust)
+./install.sh --build
 ```
 
-This builds the binary, installs to `~/.local/bin`, and registers with Claude's MCP config.
+The default behavior auto-detects: tries prebuilt first, falls back to source build if download fails.
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) (latest stable)
-- `jq` (for MCP config setup)
+- **Prebuilt install**: `curl` or `wget`, plus `jq`
+- **Source build**: [Rust](https://rustup.rs/) (latest stable), plus `jq`
 
 ## Quick Start
 
@@ -97,14 +124,14 @@ No need to manually index — Cortex auto-detects stale indexes and re-indexes b
 
 ```bash
 cortex index ./my-project        # Index a project
-cortex search "handler"          # Search symbols
-cortex search "Parser" --kind struct
-cortex context get_parser        # Get source code
+cortex search "handler" -p ./my-project
+cortex search "Parser" --kind struct -p ./my-project
+cortex context get_parser -p ./my-project
 cortex watch ./my-project        # Auto-reindex on file changes
-cortex list                      # List indexed projects + DB size
+cortex list                      # List indexed projects
 cortex clean <name>              # Remove index by project name
 cortex clean all                 # Remove all indexes
-cortex reset                     # Clear all indexes
+cortex reset /path/to/project    # Clear a project's index
 ```
 
 ## MCP Tools
@@ -128,11 +155,11 @@ cortex reset                     # Clear all indexes
 ### Typical Workflow
 
 1. `get_index_status(path)` — triggers auto-index if needed
-2. `search_symbols("RfqBuyerService")` — find the symbol
-3. `get_code_context(symbol_name="RfqBuyerService")` — read the implementation
-4. `find_references(symbol_name="RfqBuyerService")` — find all usages
-5. `get_imports(file_path="src/app/rfq/services/rfq-buyer.service.ts")` — trace dependencies
-6. `search_content(pattern="TODO")` — grep for patterns
+2. `search_symbols("RfqBuyerService", project_root)` — find the symbol
+3. `get_code_context(symbol_name="RfqBuyerService", project_root)` — read the implementation
+4. `find_references(symbol_name="RfqBuyerService", path)` — find all usages
+5. `get_imports(file_path="src/app/rfq/services/rfq-buyer.service.ts", project_root)` — trace dependencies
+6. `search_content(pattern="TODO", path)` — grep for patterns
 
 ### Auto-Reindex
 
@@ -153,22 +180,23 @@ All errors return structured JSON:
 
 ## Supported Languages
 
-| Rust | Python | JavaScript / TypeScript |
-|------|--------|------------------------|
-| `fn` (function) | `def` (function) | `function` declaration |
-| `struct` | `class` | `class` |
-| `impl` + methods | class methods | methods, constructor |
-| `trait` | | arrow function (`const fn = () =>`) |
-| `enum` | | `interface` |
-| `const` | | `type` alias |
-| `mod` | | `export` functions/classes |
+| Rust | Python | JavaScript / TypeScript | Java |
+|------|--------|------------------------|------|
+| `fn` (function) | `def` (function) | `function` declaration | class |
+| `struct` | `class` | `class` | interface |
+| `impl` + methods | class methods | methods, constructor | enum |
+| `trait` | | arrow function (`const fn = () =>`) | methods |
+| `enum` | | `interface` | constructors |
+| `const` | | `type` alias | |
+| `mod` | | `export` functions/classes | |
 
 ## How It Works
 
 ```
 Source Files ──▶ Tree-sitter Parser ──▶ SQLite Index ──▶ MCP Server ──▶ AI Assistant
-                 (per language)         (symbols +       (stdio        (Claude, Cline,
-                                        imports + FTS)   JSON-RPC)     Cursor, etc.)
+                 (per language)         (per-project,     (stdio        (Claude, Cline,
+                                        symbols +         JSON-RPC)     Cursor, etc.)
+                                        imports + FTS)
 ```
 
 1. **Scanner** walks the directory respecting `.gitignore`
@@ -181,11 +209,11 @@ Source Files ──▶ Tree-sitter Parser ──▶ SQLite Index ──▶ MCP S
 ```
 src/
 ├── main.rs           CLI entry point (index, search, list, clean, serve, watch)
-├── config.rs         TOML configuration
+├── config.rs         TOML configuration + per-project path resolution
 ├── error.rs          Error types
 ├── models/           Symbol, Import, Language, SymbolKind
 ├── scanner/          Directory walking with .gitignore
-├── parser/           Tree-sitter parsers (Rust, Python, JS, TS)
+├── parser/           Tree-sitter parsers (Rust, Python, JS, TS, Java)
 ├── indexer/          SQLite storage, migrations, indexing pipeline
 ├── query/            Search, context, references, content, semantic, imports
 ├── watcher/          File change detection via notify
@@ -194,20 +222,32 @@ src/
 
 ## Configuration
 
-Data is stored in `~/.cortex/`:
+Each project stores its data locally in `.cortex/`:
+
+```
+<project>/
+├── .cortex/
+│   ├── bin/cortex          # Binary (local mode only)
+│   ├── index.sqlite        # Symbol index database
+│   └── reports/            # Task reports
+├── .claude/
+│   └── settings.local.json # MCP config (local mode only)
+└── CLAUDE.md               # Cortex tool preferences (local mode only)
+```
+
+Global install stores the binary and project registry centrally:
 
 ```
 ~/.cortex/
-├── config.toml     # Optional config overrides
-└── db.sqlite       # Symbol index database
+├── config.toml       # Optional config overrides
+├── projects.json     # Registry of indexed projects
+~/.local/bin/
+└── cortex            # Binary (global mode)
 ```
 
-Default config (auto-generated):
+Default config (auto-generated at `~/.cortex/config.toml`):
 
 ```toml
-[database]
-path = "/home/username/.cortex/db.sqlite"
-
 [indexing]
 max_file_size_kb = 1024
 supported_extensions = ["rs", "py", "js", "ts", "tsx", "jsx"]

@@ -2,8 +2,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-INSTALL_DIR="${HOME}/.local/bin"
+MODE="global"
+INSTALL_DIR=""
+TARGET_DIR=""
 CORTEX_DIR="${HOME}/.cortex"
+BUILD_FROM_SOURCE=false
+DOWNLOAD_URL=""
+
+# GitHub releases base URL — update when you publish releases
+RELEASES_URL="https://github.com/nqh98/cortex/releases"
 
 # Color output
 RED='\033[0;31m'
@@ -17,15 +24,60 @@ log_warn() { echo -e "${YELLOW}Warning:${NC} $*"; }
 log_error() { echo -e "${RED}Error:${NC} $*"; }
 log_step() { echo -e "${BLUE}==>${NC} $*"; }
 
+detect_platform() {
+    local os arch
+    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    arch="$(uname -m)"
+    # Normalize
+    case "$os" in
+        linux) os="linux" ;;
+        darwin) os="macos" ;;
+        *) log_error "Unsupported OS: $os"; exit 1 ;;
+    esac
+    case "$arch" in
+        x86_64|amd64) arch="x86_64" ;;
+        aarch64|arm64) arch="aarch64" ;;
+        *) log_error "Unsupported architecture: $arch"; exit 1 ;;
+    esac
+    echo "${os}-${arch}"
+}
+
 usage() {
     cat <<EOF
-Usage: $0 [OPTIONS]
+Usage: $0 [MODE] [OPTIONS]
 
-Builds and installs Cortex locally.
+Cortex - Local-first code context engine with MCP integration.
+
+MODES:
+  global                Install globally (default)
+                          Binary:   ~/.local/bin/cortex
+                          Config:   ~/.cortex/
+                          MCP:      registered in global Claude settings
+                          CLAUDE.md: installed to ~/.claude/CLAUDE.md
+
+  local <path>          Install into a target repository
+                          Binary:   <path>/.cortex/bin/cortex
+                          Config:   <path>/.cortex/config.toml
+                          Index:    <path>/.cortex/index.sqlite
+                          MCP:      registered in <path>/.claude/settings.local.json
+                          CLAUDE.md: installed to <path>/CLAUDE.md
+
+SOURCES (pick one):
+  --url <url>           Download a prebuilt binary from URL
+  --version <tag>       Download a prebuilt binary from GitHub releases (e.g. v0.2.0)
+  --build               Build from source (requires Rust)
+  (default)             Auto-detect: use prebuilt if available, fall back to source build
 
 OPTIONS:
-  --install-dir <path>   Custom directory for binary installation (default: ~/.local/bin)
-  -h, --help             Show this help message
+  --install-dir <path>  Custom directory for binary installation (global mode only)
+  -h, --help            Show this help message
+
+EXAMPLES:
+  $0                                         # Global, auto-detect binary source
+  $0 local .                                 # Install into current directory
+  $0 --url https://example.com/cortex        # Use a specific prebuilt binary
+  $0 --version v0.2.0                        # Download from GitHub releases
+  $0 --build                                 # Force build from source
 
 After installation:
   cortex index /path/to/project   # Index a repo
@@ -36,20 +88,41 @@ EOF
     exit 0
 }
 
+# ── Parse arguments ────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case $1 in
+        global) MODE="global"; shift ;;
+        local)
+            MODE="local"
+            if [[ $# -lt 2 ]] || [[ "$2" == --* ]]; then
+                log_error "local mode requires a target directory: $0 local <path>"
+                exit 1
+            fi
+            TARGET_DIR="$(cd "$2" 2>/dev/null && pwd)" || {
+                log_error "Directory not found: $2"
+                exit 1
+            }
+            shift 2
+            ;;
+        --url) DOWNLOAD_URL="$2"; shift 2 ;;
+        --version) DOWNLOAD_URL="RELEASE:$(detect_platform):$2"; shift 2 ;;
+        --build) BUILD_FROM_SOURCE=true; shift ;;
         --install-dir) INSTALL_DIR="$2"; shift 2 ;;
         -h|--help) usage ;;
         *) log_error "Unknown option: $1"; usage ;;
     esac
 done
 
-# ── Checks ─────────────────────────────────────────────────────────────
-if ! command -v cargo &>/dev/null; then
-    log_error "Rust/Cargo is not installed. Install it first: https://rustup.rs"
-    exit 1
+# Set defaults based on mode
+if [[ "$MODE" == "global" ]]; then
+    INSTALL_DIR="${INSTALL_DIR:-${HOME}/.local/bin}"
+    CORTEX_DIR="${HOME}/.cortex"
+else
+    INSTALL_DIR="${TARGET_DIR}/.cortex/bin"
+    CORTEX_DIR="${TARGET_DIR}/.cortex"
 fi
 
+# ── Prerequisite checks ────────────────────────────────────────────────
 if ! command -v jq &>/dev/null; then
     log_error "jq is not installed. Install it first:"
     echo "  Ubuntu/Debian: sudo apt install jq"
@@ -57,77 +130,203 @@ if ! command -v jq &>/dev/null; then
     exit 1
 fi
 
-# ── Step 1: Build the binary ───────────────────────────────────────────
-log_step "Building Cortex binary..."
-cd "$SCRIPT_DIR"
-cargo build --release 2>&1 | tail -1
+HAS_RUST=false
+if command -v cargo &>/dev/null; then
+    HAS_RUST=true
+fi
+
+# ── Determine how to get the binary ────────────────────────────────────
+BINARY_SOURCE=""   # "download" | "build" | "existing"
+
+if [[ -n "$DOWNLOAD_URL" ]]; then
+    if ! command -v curl &>/dev/null && ! command -v wget &>/dev/null; then
+        log_error "curl or wget is required to download prebuilt binaries"
+        exit 1
+    fi
+    BINARY_SOURCE="download"
+elif [[ "$BUILD_FROM_SOURCE" == true ]]; then
+    if [[ "$HAS_RUST" != true ]]; then
+        log_error "Rust/Cargo is required for --build. Install it: https://rustup.rs"
+        exit 1
+    fi
+    BINARY_SOURCE="build"
+else
+    # Auto-detect: prefer prebuilt if available, fall back to source build
+    if command -v curl &>/dev/null || command -v wget &>/dev/null; then
+        BINARY_SOURCE="download"
+    elif [[ "$HAS_RUST" == true ]]; then
+        BINARY_SOURCE="build"
+    else
+        log_error "Cannot install: no curl/wget for prebuilt binary, and no Rust for source build."
+        echo ""
+        echo "Install one of:"
+        echo "  curl:     sudo apt install curl"
+        echo "  Rust:     https://rustup.rs"
+        exit 1
+    fi
+fi
+
+# ── Step 1: Obtain the binary ──────────────────────────────────────────
+BINARY_PATH=""
+
+if [[ "$BINARY_SOURCE" == "download" ]]; then
+    # Resolve the download URL
+    if [[ "$DOWNLOAD_URL" == RELEASE:* ]]; then
+        # Format: RELEASE:<platform>:<version>
+        IFS=: read -r _ PLATFORM TAG <<< "$DOWNLOAD_URL"
+        DOWNLOAD_URL="${RELEASES_URL}/download/${TAG}/cortex-${PLATFORM}.tar.gz"
+    fi
+
+    # If no explicit URL was given, try the latest release
+    if [[ -z "$DOWNLOAD_URL" ]]; then
+        PLATFORM="$(detect_platform)"
+        DOWNLOAD_URL="${RELEASES_URL}/latest/download/cortex-${PLATFORM}.tar.gz"
+    fi
+
+    log_step "Downloading prebuilt binary..."
+    echo "  URL: $DOWNLOAD_URL"
+
+    TMP_DIR="$(mktemp -d)"
+    trap 'rm -rf "$TMP_DIR"' EXIT
+
+    if command -v curl &>/dev/null; then
+        HTTP_CODE=$(curl -fsSL -w "%{http_code}" -o "$TMP_DIR/cortex.tar.gz" "$DOWNLOAD_URL" 2>/dev/null) || HTTP_CODE="000"
+    else
+        HTTP_CODE=$(wget -q -O "$TMP_DIR/cortex.tar.gz" "$DOWNLOAD_URL" 2>&1 | grep -c "saved" || echo "000")
+        # wget doesn't return HTTP codes the same way; check if file exists and is non-empty
+        if [[ -f "$TMP_DIR/cortex.tar.gz" ]] && [[ -s "$TMP_DIR/cortex.tar.gz" ]]; then
+            HTTP_CODE="200"
+        else
+            HTTP_CODE="404"
+        fi
+    fi
+
+    if [[ "$HTTP_CODE" == "200" ]]; then
+        tar xzf "$TMP_DIR/cortex.tar.gz" -C "$TMP_DIR" 2>/dev/null || {
+            # Maybe it's a raw binary, not a tarball
+            mv "$TMP_DIR/cortex.tar.gz" "$TMP_DIR/cortex" 2>/dev/null
+        }
+        if [[ -f "$TMP_DIR/cortex" ]]; then
+            BINARY_PATH="$TMP_DIR/cortex"
+            log_info "Downloaded prebuilt binary"
+        else
+            log_error "Downloaded archive does not contain a 'cortex' binary"
+            exit 1
+        fi
+    else
+        # Download failed — fall back to source build if possible
+        log_warn "Prebuilt binary not available (HTTP $HTTP_CODE)"
+        if [[ "$HAS_RUST" == true ]]; then
+            log_info "Falling back to source build..."
+            BINARY_SOURCE="build"
+        else
+            log_error "Prebuilt binary download failed and Rust is not installed."
+            echo "  Download: $DOWNLOAD_URL"
+            echo "  Install Rust: https://rustup.rs"
+            exit 1
+        fi
+    fi
+fi
+
+if [[ "$BINARY_SOURCE" == "build" ]]; then
+    log_step "Building Cortex from source..."
+    cd "$SCRIPT_DIR"
+    cargo build --release 2>&1 | tail -1
+    BINARY_PATH="$SCRIPT_DIR/target/release/cortex"
+    log_info "Built from source"
+fi
 
 # ── Step 2: Install binary ─────────────────────────────────────────────
 mkdir -p "$INSTALL_DIR"
-cp "$SCRIPT_DIR/target/release/cortex" "$INSTALL_DIR/cortex"
+cp "$BINARY_PATH" "$INSTALL_DIR/cortex"
 chmod +x "$INSTALL_DIR/cortex"
 log_info "Binary installed to: $INSTALL_DIR/cortex"
 
-if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+if [[ "$MODE" == "global" ]] && [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     log_warn "$INSTALL_DIR is not in your PATH."
     echo ""
     echo "Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
     echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
-    echo ""
-    echo "Then run: source ~/.bashrc (or ~/.zshrc)"
 fi
 
-# ── Step 3: Create ~/.cortex directory ─────────────────────────────────
+# ── Step 3: Create data directory ──────────────────────────────────────
 mkdir -p "$CORTEX_DIR"
 log_info "Config directory: $CORTEX_DIR"
 
-# ── Step 4: Detect and configure MCP ───────────────────────────────────
+# ── Step 4: Configure MCP ──────────────────────────────────────────────
 log_step "Configuring MCP server..."
 
-detect_claude_config() {
-    local candidates=()
-    candidates+=("$HOME/.claude/settings.json")
-    candidates+=("$HOME/Library/Application Support/Claude/claude_desktop_config.json")
-    candidates+=("$HOME/.config/claude/claude_desktop_config.json")
+CORTEX_BIN="$INSTALL_DIR/cortex"
 
-    for f in "${candidates[@]}"; do
-        if [[ -f "$f" ]]; then
-            echo "$f"
-            return
-        fi
-    done
-    echo "$HOME/.claude/settings.json"
-}
+if [[ "$MODE" == "global" ]]; then
+    # Global: register in Claude's global settings
+    detect_claude_config() {
+        local candidates=()
+        candidates+=("$HOME/.claude/settings.json")
+        candidates+=("$HOME/Library/Application Support/Claude/claude_desktop_config.json")
+        candidates+=("$HOME/.config/claude/claude_desktop_config.json")
 
-CONFIG_FILE="$(detect_claude_config)"
-CONFIG_DIR="$(dirname "$CONFIG_FILE")"
-mkdir -p "$CONFIG_DIR"
+        for f in "${candidates[@]}"; do
+            if [[ -f "$f" ]]; then
+                echo "$f"
+                return
+            fi
+        done
+        echo "$HOME/.claude/settings.json"
+    }
 
-MCP_ENTRY=$(jq -n \
-    --arg bin_path "$INSTALL_DIR/cortex" \
-    '{
-        "command": "\($bin_path)",
-        "args": ["serve"]
-    }')
+    CONFIG_FILE="$(detect_claude_config)"
+    CONFIG_DIR="$(dirname "$CONFIG_FILE")"
+    mkdir -p "$CONFIG_DIR"
 
-if [[ -f "$CONFIG_FILE" ]]; then
-    UPDATED=$(jq --argjson entry "$MCP_ENTRY" --arg name "cortex" \
-        '.mcpServers = (.mcpServers // {}) + {($name): $entry}' \
-        "$CONFIG_FILE")
-    echo "$UPDATED" > "$CONFIG_FILE"
+    MCP_ENTRY=$(jq -n \
+        --arg bin_path "$CORTEX_BIN" \
+        '{
+            "command": "\($bin_path)",
+            "args": ["serve"]
+        }')
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        UPDATED=$(jq --argjson entry "$MCP_ENTRY" --arg name "cortex" \
+            '.mcpServers = (.mcpServers // {}) + {($name): $entry}' \
+            "$CONFIG_FILE")
+        echo "$UPDATED" > "$CONFIG_FILE"
+    else
+        jq -n --argjson entry "$MCP_ENTRY" --arg name "cortex" \
+            '{"mcpServers": {($name): $entry}}' \
+            > "$CONFIG_FILE"
+    fi
+
+    echo "  MCP config: $CONFIG_FILE"
 else
-    jq -n --argjson entry "$MCP_ENTRY" --arg name "cortex" \
-        '{"mcpServers": {($name): $entry}}' \
-        > "$CONFIG_FILE"
+    # Local: register in project's .claude/settings.local.json
+    CLAUDE_DIR="${TARGET_DIR}/.claude"
+    mkdir -p "$CLAUDE_DIR"
+    CONFIG_FILE="${CLAUDE_DIR}/settings.local.json"
+
+    MCP_ENTRY=$(jq -n \
+        --arg bin_path "$CORTEX_BIN" \
+        '{
+            "command": "\($bin_path)",
+            "args": ["serve"]
+        }')
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        UPDATED=$(jq --argjson entry "$MCP_ENTRY" --arg name "cortex" \
+            '.mcpServers = (.mcpServers // {}) + {($name): $entry}' \
+            "$CONFIG_FILE")
+        echo "$UPDATED" > "$CONFIG_FILE"
+    else
+        jq -n --argjson entry "$MCP_ENTRY" --arg name "cortex" \
+            '{"mcpServers": {($name): $entry}}' \
+            > "$CONFIG_FILE"
+    fi
+
+    echo "  MCP config: $CONFIG_FILE"
 fi
 
-echo "  MCP config: $CONFIG_FILE"
-
-# ── Step 5: Install global Cortex tool preferences ─────────────────────
-log_step "Installing Cortex tool preferences to ~/.claude/CLAUDE.md..."
-
-CLAUDE_MD="${HOME}/.claude/CLAUDE.md"
-mkdir -p "$(dirname "$CLAUDE_MD")"
+# ── Step 5: Install Cortex tool preferences (CLAUDE.md) ────────────────
+log_step "Installing Cortex tool preferences..."
 
 CORTEX_PREFS='# Cortex MCP Tools (MANDATORY)
 
@@ -155,7 +354,17 @@ You MUST use Cortex tools instead of Bash grep/find/rg for ALL code exploration.
 ## Rule of thumb
 
 If the goal is "find", "search", "look up", "where is", "who uses", "what imports", or "show me the code for" — use Cortex. Only use Bash/Read when you already know the exact file path and just want to read or edit it.
+
+Cortex auto-reindexes when source files change (30s cooldown). Call `index_project` if the index seems stale.
 '
+
+if [[ "$MODE" == "global" ]]; then
+    CLAUDE_MD="${HOME}/.claude/CLAUDE.md"
+else
+    CLAUDE_MD="${TARGET_DIR}/CLAUDE.md"
+fi
+
+mkdir -p "$(dirname "$CLAUDE_MD")"
 
 if [[ -f "$CLAUDE_MD" ]]; then
     # Remove any existing Cortex preferences block, then append new one
@@ -169,18 +378,37 @@ else
     log_info "Created: $CLAUDE_MD"
 fi
 
+# ── Step 6 (local mode): Initial index ─────────────────────────────────
+if [[ "$MODE" == "local" ]]; then
+    log_step "Running initial index..."
+    "$CORTEX_BIN" index "$TARGET_DIR" || log_warn "Initial index failed (you can run it manually later)"
+fi
+
 # ── Done ───────────────────────────────────────────────────────────────
 echo ""
-log_info "Cortex installed successfully!"
+log_info "Cortex installed successfully! (mode: $MODE, source: $BINARY_SOURCE)"
 echo ""
-echo "  Binary:    $INSTALL_DIR/cortex"
-echo "  Data:      $CORTEX_DIR"
-echo "  MCP:       cortex"
-echo "  Global:    ~/.claude/CLAUDE.md (Cortex tool preferences)"
-echo ""
-echo "Usage — from any repository directory:"
-echo "  cortex index .              # Index the repo"
-echo "  cortex search \"handler\"     # Search symbols"
-echo "  cortex context get_parser   # Get symbol source"
+
+if [[ "$MODE" == "global" ]]; then
+    echo "  Binary:    $INSTALL_DIR/cortex"
+    echo "  Data:      $CORTEX_DIR"
+    echo "  MCP:       cortex (global)"
+    echo "  Prefs:     ~/.claude/CLAUDE.md"
+    echo ""
+    echo "Usage — from any repository directory:"
+    echo "  cortex index .              # Index the repo"
+    echo "  cortex search \"handler\"     # Search symbols"
+    echo "  cortex context get_parser   # Get symbol source"
+else
+    echo "  Binary:    $INSTALL_DIR/cortex"
+    echo "  Data:      $CORTEX_DIR/"
+    echo "  Index:     $CORTEX_DIR/index.sqlite"
+    echo "  MCP:       cortex ($TARGET_DIR/.claude/settings.local.json)"
+    echo "  Prefs:     $TARGET_DIR/CLAUDE.md"
+    echo ""
+    echo "Everything is self-contained in $TARGET_DIR/.cortex/"
+    echo "To uninstall: rm -rf $TARGET_DIR/.cortex $TARGET_DIR/CLAUDE.md"
+fi
+
 echo ""
 echo "Restart Claude for MCP changes to take effect."

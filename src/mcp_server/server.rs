@@ -21,10 +21,10 @@ use std::time::{Duration, Instant, SystemTime};
 
 const REINDEX_COOLDOWN: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CortexServer {
     config: Arc<Config>,
-    pool: tokio::sync::OnceCell<db::DbPool>,
+    pools: tokio::sync::RwLock<HashMap<String, db::DbPool>>,
     last_index_check: tokio::sync::Mutex<HashMap<String, Instant>>,
 }
 
@@ -32,14 +32,32 @@ impl CortexServer {
     pub fn new(config: Config) -> Self {
         Self {
             config: Arc::new(config),
-            pool: tokio::sync::OnceCell::new(),
+            pools: tokio::sync::RwLock::new(HashMap::new()),
             last_index_check: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
-    async fn get_pool(&self) -> crate::error::Result<&db::DbPool> {
-        let db_path = format!("sqlite:{}", self.config.database.path);
-        self.pool.get_or_try_init(|| db::init_pool(&db_path)).await
+    async fn get_pool(&self, project_root: &str) -> crate::error::Result<db::DbPool> {
+        {
+            let pools = self.pools.read().await;
+            if let Some(pool) = pools.get(project_root) {
+                return Ok(pool.clone());
+            }
+        }
+
+        let mut pools = self.pools.write().await;
+        // Double-check after acquiring write lock
+        if let Some(pool) = pools.get(project_root) {
+            return Ok(pool.clone());
+        }
+
+        let db_path = crate::config::project_db_path(Path::new(project_root));
+        if let Some(parent) = db_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let pool = db::init_pool(&format!("sqlite:{}", db_path.display())).await?;
+        pools.insert(project_root.to_string(), pool.clone());
+        Ok(pool)
     }
 
     async fn ensure_indexed(&self, project_root: &str) -> crate::error::Result<()> {
@@ -53,10 +71,10 @@ impl CortexServer {
             }
         }
 
-        let pool = self.get_pool().await?;
+        let pool = self.get_pool(project_root).await?;
         let path = Path::new(project_root);
 
-        let (_, _, last_indexed) = db::get_project_stats(pool, project_root).await?;
+        let (_, _, last_indexed) = db::get_project_stats(&pool, project_root).await?;
 
         let needs_reindex = match last_indexed {
             None => true,
@@ -67,7 +85,7 @@ impl CortexServer {
         };
 
         if needs_reindex {
-            let indexer = Indexer::new(&self.config).await?;
+            let indexer = Indexer::new(&self.config, path).await?;
             indexer.index_project(path).await?;
         }
 
@@ -135,6 +153,9 @@ pub struct SearchSymbolsRequest {
     /// Search query (symbol name pattern, minimum 1 character)
     #[schemars(description = "Search query (symbol name pattern, minimum 1 character)")]
     pub query: String,
+    /// Absolute path to the project root directory
+    #[schemars(description = "Absolute path to the project root directory")]
+    pub project_root: String,
     /// Filter by symbol kind
     #[schemars(description = "Filter by symbol kind")]
     pub kind: Option<crate::models::SymbolKind>,
@@ -152,6 +173,9 @@ pub struct GetCodeContextRequest {
     /// Name of the symbol to retrieve
     #[schemars(description = "Name of the symbol to retrieve")]
     pub symbol_name: String,
+    /// Absolute path to the project root directory
+    #[schemars(description = "Absolute path to the project root directory")]
+    pub project_root: String,
     /// Relative path to disambiguate when multiple symbols have the same name
     #[schemars(
         description = "Relative path to the source file (e.g. src/parser/mod.rs). Use when multiple symbols have the same name to disambiguate."
@@ -321,6 +345,14 @@ pub struct GetIndexStatusRequest {
     pub path: String,
 }
 
+/// Get symbol stats request parameters
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetSymbolStatsRequest {
+    /// Absolute path to the project root directory
+    #[schemars(description = "Absolute path to the project root directory")]
+    pub path: String,
+}
+
 /// List files request parameters
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListFilesRequest {
@@ -365,7 +397,30 @@ impl CortexServer {
             .to_string();
         }
 
-        let pool = match self.get_pool().await {
+        let project_root = match std::path::Path::new(&request.project_root).canonicalize() {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "invalid_path",
+                        "message": format!("Project root not found: {}", request.project_root)
+                    }
+                })
+                .to_string();
+            }
+        };
+
+        if let Err(e) = self.ensure_indexed(&project_root).await {
+            return serde_json::json!({
+                "error": {
+                    "code": "auto_index_failed",
+                    "message": format!("Auto-indexing failed: {e}")
+                }
+            })
+            .to_string();
+        }
+
+        let pool = match self.get_pool(&project_root).await {
             Ok(p) => p,
             Err(e) => {
                 return serde_json::json!({
@@ -383,7 +438,7 @@ impl CortexServer {
         let kind_filter = request.kind.map(|k| k.as_str());
 
         let results = match search::search_symbols_paginated(
-            pool,
+            &pool,
             &request.query,
             kind_filter,
             limit,
@@ -403,7 +458,7 @@ impl CortexServer {
             }
         };
 
-        let total_count = match search::count_symbols(pool, &request.query, kind_filter).await {
+        let total_count = match search::count_symbols(&pool, &request.query, kind_filter).await {
             Ok(c) => c as u32,
             Err(_) => results.len() as u32, // Fallback to returned count
         };
@@ -461,7 +516,30 @@ impl CortexServer {
             .to_string();
         }
 
-        let pool = match self.get_pool().await {
+        let project_root = match std::path::Path::new(&request.project_root).canonicalize() {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "invalid_path",
+                        "message": format!("Project root not found: {}", request.project_root)
+                    }
+                })
+                .to_string();
+            }
+        };
+
+        if let Err(e) = self.ensure_indexed(&project_root).await {
+            return serde_json::json!({
+                "error": {
+                    "code": "auto_index_failed",
+                    "message": format!("Auto-indexing failed: {e}")
+                }
+            })
+            .to_string();
+        }
+
+        let pool = match self.get_pool(&project_root).await {
             Ok(p) => p,
             Err(e) => {
                 return serde_json::json!({
@@ -475,7 +553,7 @@ impl CortexServer {
         };
 
         let ctx = match context::get_code_context(
-            pool,
+            &pool,
             request.file_path.as_deref(),
             &request.symbol_name,
         )
@@ -493,7 +571,7 @@ impl CortexServer {
                 // On symbol_not_found, suggest similar symbols
                 if matches!(&e, crate::error::CortexError::SymbolNotFound(_)) {
                     let suggestions =
-                        search::search_symbols_paginated(pool, &request.symbol_name, None, 5, 0)
+                        search::search_symbols_paginated(&pool, &request.symbol_name, None, 5, 0)
                             .await
                             .unwrap_or_default();
 
@@ -576,19 +654,6 @@ impl CortexServer {
         &self,
         Parameters(request): Parameters<ListDocumentSymbolsRequest>,
     ) -> String {
-        let pool = match self.get_pool().await {
-            Ok(p) => p,
-            Err(e) => {
-                return serde_json::json!({
-                    "error": {
-                        "code": "database_error",
-                        "message": format!("Failed to connect to database: {e}")
-                    }
-                })
-                .to_string()
-            }
-        };
-
         let project_root = match std::path::Path::new(&request.project_root).canonicalize() {
             Ok(p) => p.to_string_lossy().to_string(),
             Err(_) => {
@@ -612,8 +677,21 @@ impl CortexServer {
             .to_string();
         }
 
+        let pool = match self.get_pool(&project_root).await {
+            Ok(p) => p,
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to connect to database: {e}")
+                    }
+                })
+                .to_string()
+            }
+        };
+
         let rows =
-            match document::list_document_symbols(pool, &project_root, &request.file_path).await {
+            match document::list_document_symbols(&pool, &project_root, &request.file_path).await {
                 Ok(r) => r,
                 Err(e) => {
                     return serde_json::json!({
@@ -691,19 +769,6 @@ impl CortexServer {
             .to_string();
         }
 
-        let pool = match self.get_pool().await {
-            Ok(p) => p,
-            Err(e) => {
-                return serde_json::json!({
-                    "error": {
-                        "code": "database_error",
-                        "message": format!("Failed to connect to database: {e}")
-                    }
-                })
-                .to_string()
-            }
-        };
-
         let project_root = match std::path::Path::new(&request.path).canonicalize() {
             Ok(p) => p.to_string_lossy().to_string(),
             Err(_) => {
@@ -727,29 +792,36 @@ impl CortexServer {
             .to_string();
         }
 
-        let limit = request.limit.unwrap_or(50).min(200) as usize;
-        let ext = request.file_extension.as_deref();
-
-        let matches = match content::search_content(
-            pool,
-            &project_root,
-            &request.pattern,
-            ext,
-            limit,
-        )
-        .await
-        {
-            Ok(m) => m,
+        let pool = match self.get_pool(&project_root).await {
+            Ok(p) => p,
             Err(e) => {
                 return serde_json::json!({
                     "error": {
-                        "code": "search_error",
-                        "message": format!("Content search failed: {e}")
+                        "code": "database_error",
+                        "message": format!("Failed to connect to database: {e}")
                     }
                 })
                 .to_string()
             }
         };
+
+        let limit = request.limit.unwrap_or(50).min(200) as usize;
+        let ext = request.file_extension.as_deref();
+
+        let matches =
+            match content::search_content(&pool, &project_root, &request.pattern, ext, limit).await
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    return serde_json::json!({
+                        "error": {
+                            "code": "search_error",
+                            "message": format!("Content search failed: {e}")
+                        }
+                    })
+                    .to_string()
+                }
+            };
 
         let total_count = matches.len() as u32;
         let has_more = total_count >= limit as u32;
@@ -803,19 +875,6 @@ impl CortexServer {
             .to_string();
         }
 
-        let pool = match self.get_pool().await {
-            Ok(p) => p,
-            Err(e) => {
-                return serde_json::json!({
-                    "error": {
-                        "code": "database_error",
-                        "message": format!("Failed to connect to database: {e}")
-                    }
-                })
-                .to_string()
-            }
-        };
-
         let project_root = match std::path::Path::new(&request.path).canonicalize() {
             Ok(p) => p.to_string_lossy().to_string(),
             Err(_) => {
@@ -839,10 +898,23 @@ impl CortexServer {
             .to_string();
         }
 
+        let pool = match self.get_pool(&project_root).await {
+            Ok(p) => p,
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to connect to database: {e}")
+                    }
+                })
+                .to_string()
+            }
+        };
+
         let limit = request.limit.unwrap_or(50).min(100) as usize;
 
         let refs = match references::find_references(
-            pool,
+            &pool,
             &project_root,
             &request.symbol_name,
             request.file_path.as_deref(),
@@ -919,19 +991,6 @@ impl CortexServer {
             .to_string();
         }
 
-        let pool = match self.get_pool().await {
-            Ok(p) => p,
-            Err(e) => {
-                return serde_json::json!({
-                    "error": {
-                        "code": "database_error",
-                        "message": format!("Failed to connect to database: {e}")
-                    }
-                })
-                .to_string()
-            }
-        };
-
         let project_root = match std::path::Path::new(&request.path).canonicalize() {
             Ok(p) => p.to_string_lossy().to_string(),
             Err(_) => {
@@ -941,7 +1000,7 @@ impl CortexServer {
                         "message": format!("Project root not found: {}", request.path)
                     }
                 })
-                .to_string()
+                .to_string();
             }
         };
 
@@ -955,10 +1014,23 @@ impl CortexServer {
             .to_string();
         }
 
+        let pool = match self.get_pool(&project_root).await {
+            Ok(p) => p,
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to connect to database: {e}")
+                    }
+                })
+                .to_string()
+            }
+        };
+
         let limit = request.limit.unwrap_or(50).min(100) as usize;
 
         let results =
-            match semantic::search_by_semantic(pool, &request.query, &project_root, limit).await {
+            match semantic::search_by_semantic(&pool, &request.query, &project_root, limit).await {
                 Ok(r) => r,
                 Err(e) => {
                     return serde_json::json!({
@@ -972,7 +1044,7 @@ impl CortexServer {
             };
 
         let total_count =
-            match semantic::count_semantic_results(pool, &request.query, &project_root).await {
+            match semantic::count_semantic_results(&pool, &request.query, &project_root).await {
                 Ok(c) => c as u32,
                 Err(_) => results.len() as u32,
             };
@@ -1017,19 +1089,6 @@ impl CortexServer {
         description = "Analyze import dependencies for a file. Shows outgoing (what this file imports) and incoming (what imports this file) dependencies. Returns structured JSON with import details."
     )]
     async fn get_imports(&self, Parameters(request): Parameters<GetImportsRequest>) -> String {
-        let pool = match self.get_pool().await {
-            Ok(p) => p,
-            Err(e) => {
-                return serde_json::json!({
-                    "error": {
-                        "code": "database_error",
-                        "message": format!("Failed to connect to database: {e}")
-                    }
-                })
-                .to_string()
-            }
-        };
-
         let project_root = match std::path::Path::new(&request.project_root).canonicalize() {
             Ok(p) => p.to_string_lossy().to_string(),
             Err(_) => {
@@ -1039,7 +1098,7 @@ impl CortexServer {
                         "message": format!("Project root not found: {}", request.project_root)
                     }
                 })
-                .to_string()
+                .to_string();
             }
         };
 
@@ -1055,8 +1114,21 @@ impl CortexServer {
 
         let direction = request.direction.as_deref().unwrap_or("both");
 
+        let pool = match self.get_pool(&project_root).await {
+            Ok(p) => p,
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to connect to database: {e}")
+                    }
+                })
+                .to_string()
+            }
+        };
+
         let analysis =
-            match imports_query::get_imports(pool, &project_root, &request.file_path, direction)
+            match imports_query::get_imports(&pool, &project_root, &request.file_path, direction)
                 .await
             {
                 Ok(a) => a,
@@ -1200,7 +1272,7 @@ impl CortexServer {
             .to_string();
         }
 
-        let indexer = match Indexer::new(&self.config).await {
+        let indexer = match Indexer::new(&self.config, path).await {
             Ok(i) => i,
             Err(e) => {
                 return serde_json::json!({
@@ -1276,7 +1348,7 @@ impl CortexServer {
             .to_string();
         }
 
-        let pool = match self.get_pool().await {
+        let pool = match self.get_pool(&project_root).await {
             Ok(p) => p,
             Err(e) => {
                 return serde_json::json!({
@@ -1290,7 +1362,7 @@ impl CortexServer {
         };
 
         let (file_count, symbol_count, last_indexed) =
-            match db::get_project_stats(pool, &project_root).await {
+            match db::get_project_stats(&pool, &project_root).await {
                 Ok(s) => s,
                 Err(e) => {
                     return serde_json::json!({
@@ -1303,7 +1375,7 @@ impl CortexServer {
                 }
             };
 
-        let languages = match db::get_project_languages(pool, &project_root).await {
+        let languages = match db::get_project_languages(&pool, &project_root).await {
             Ok(l) => l,
             Err(e) => {
                 return serde_json::json!({
@@ -1654,8 +1726,27 @@ impl CortexServer {
     #[tool(
         description = "Get statistics about symbols in the index including total count and breakdown by kind and language. Returns structured JSON with symbol statistics."
     )]
-    async fn get_symbol_stats(&self) -> String {
-        let pool = match self.get_pool().await {
+    async fn get_symbol_stats(
+        &self,
+        Parameters(request): Parameters<GetSymbolStatsRequest>,
+    ) -> String {
+        let path = Path::new(&request.path);
+        let project_root = path
+            .canonicalize()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| request.path.clone());
+
+        if let Err(e) = self.ensure_indexed(&project_root).await {
+            return serde_json::json!({
+                "error": {
+                    "code": "auto_index_failed",
+                    "message": format!("Auto-indexing failed: {e}")
+                }
+            })
+            .to_string();
+        }
+
+        let pool = match self.get_pool(&project_root).await {
             Ok(p) => p,
             Err(e) => {
                 return serde_json::json!({
@@ -1858,7 +1949,7 @@ Available tools:
 - get_index_status: Check if a project is indexed and get statistics (returns JSON)
 - list_files: List files with optional filtering by extension (returns JSON)
 - list_symbol_kinds: Get available symbol types for filtering (returns JSON)
-- get_symbol_stats: Get overall statistics about the index (returns JSON)
+- get_symbol_stats: Get statistics about symbols in a project's index (returns JSON)
 - list_document_symbols: List all symbols in a file with hierarchy (returns JSON)
 - search_content: Search file contents by regex or text pattern (returns JSON)
 - find_references: Find all references to a symbol across the project (returns JSON)

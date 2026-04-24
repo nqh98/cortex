@@ -16,13 +16,18 @@ pub struct Indexer {
 }
 
 impl Indexer {
-    pub async fn new(config: &Config) -> Result<Self> {
+    pub async fn new(config: &Config, project_root: &Path) -> Result<Self> {
+        let db_path = crate::config::project_db_path(project_root);
+
         // Ensure the .cortex directory exists
-        if let Some(parent) = Path::new(&config.database.path).parent() {
+        if let Some(parent) = db_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
 
-        let pool = db::init_pool(&format!("sqlite:{}", config.database.path)).await?;
+        let pool = db::init_pool(&format!("sqlite:{}", db_path.display())).await?;
+
+        crate::config::register_project(project_root);
+
         Ok(Self {
             pool,
             config: config.clone(),

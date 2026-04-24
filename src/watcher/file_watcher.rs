@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
 pub async fn watch_project(project_path: &Path, config: &Config) -> crate::error::Result<()> {
-    let indexer = Indexer::new(config).await?;
+    let indexer = Indexer::new(config, project_path).await?;
     let (tx, rx) = mpsc::channel();
 
     let mut watcher = RecommendedWatcher::new(
