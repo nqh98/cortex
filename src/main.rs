@@ -46,6 +46,13 @@ enum Commands {
         /// Path to a specific project to reset (omit to clear all)
         path: Option<String>,
     },
+    /// List all indexed projects with stats
+    List,
+    /// Clean index by project name or all projects
+    Clean {
+        /// Project name (substring match) or "all" to remove all indexes
+        name: String,
+    },
 }
 
 #[tokio::main]
@@ -163,7 +170,71 @@ async fn run(cli: Cli) -> cortex::error::Result<()> {
                 println!("Cleared entire index ({} files removed)", count);
             }
         }
+        Commands::List => {
+            let pool = db::init_pool(&format!("sqlite:{}", config.database.path)).await?;
+            let projects = db::list_all_projects(&pool).await?;
+
+            if projects.is_empty() {
+                println!("No indexed projects.");
+                return Ok(());
+            }
+
+            // Get DB file size
+            let db_size = std::fs::metadata(&config.database.path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+
+            println!("Indexed projects ({}):\n", projects.len());
+            for p in &projects {
+                let last = p.last_indexed.as_deref().unwrap_or("never");
+                println!("  {}", p.project_root);
+                println!("    Files: {}  Symbols: {}  Last indexed: {}", p.file_count, p.symbol_count, last);
+            }
+
+            println!("\nDatabase size: {}", format_size(db_size));
+        }
+        Commands::Clean { name } => {
+            let pool = db::init_pool(&format!("sqlite:{}", config.database.path)).await?;
+
+            if name == "all" {
+                let projects = db::list_all_projects(&pool).await?;
+                let count = db::delete_all(&pool).await?;
+                println!("Cleaned all indexes ({} projects, {} files removed)", projects.len(), count);
+            } else {
+                let projects = db::list_all_projects(&pool).await?;
+                let matches: Vec<_> = projects.iter()
+                    .filter(|p| p.project_root.contains(&name))
+                    .collect();
+
+                if matches.is_empty() {
+                    println!("No indexed project matching '{}'", name);
+                    return Ok(());
+                }
+
+                for p in &matches {
+                    let count = db::delete_project(&pool, &p.project_root).await?;
+                    println!("Cleaned index for {} ({} files removed)", p.project_root, count);
+                }
+
+                if matches.len() > 1 {
+                    println!("Matched {} projects", matches.len());
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
 }

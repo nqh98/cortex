@@ -132,7 +132,7 @@ fn extract_named_symbol(
         start_col: node.start_position().column,
         end_col: node.end_position().column,
         signature: Some(format!("{keyword} {name_text}")),
-        documentation: None,
+        documentation: extract_jsdoc(node, source),
     })
 }
 
@@ -162,7 +162,7 @@ fn extract_class(node: &tree_sitter::Node, source: &str) -> Option<Symbol> {
         start_col: node.start_position().column,
         end_col: node.end_position().column,
         signature: Some(signature),
-        documentation: None,
+        documentation: extract_jsdoc(node, source),
     })
 }
 
@@ -208,7 +208,7 @@ fn extract_method_symbol(node: &tree_sitter::Node, source: &str) -> Option<Symbo
         start_col: node.start_position().column,
         end_col: node.end_position().column,
         signature: Some(name_text.to_string()),
-        documentation: None,
+        documentation: extract_jsdoc(node, source),
     })
 }
 
@@ -234,7 +234,7 @@ fn extract_variable_declarations(
                             start_col: child.start_position().column,
                             end_col: child.end_position().column,
                             signature: Some(format!("const {name} = () => ...")),
-                            documentation: None,
+                            documentation: extract_jsdoc(&child, source),
                         });
                     }
                 }
@@ -251,6 +251,67 @@ fn find_child_by_kind<'a>(node: &'a tree_sitter::Node, kind: &str) -> Option<tre
         }
     }
     None
+}
+
+/// Extract JSDoc comment preceding a node.
+/// Walks backward through previous siblings to find a `comment` node,
+/// skipping any `decorator` nodes (e.g. @Inject, @ApiProperty).
+fn extract_jsdoc(node: &tree_sitter::Node, source: &str) -> Option<String> {
+    // tree-sitter stores comments as children of the parent, not as named siblings.
+    // We need to look at the parent's children to find comments before our node.
+    let parent = node.parent()?;
+    let my_start = node.start_byte();
+
+    let mut cursor = parent.walk();
+    let mut comments: Vec<String> = Vec::new();
+
+    for child in parent.children(&mut cursor) {
+        if child.start_byte() >= my_start {
+            break;
+        }
+        // Collect consecutive comment blocks immediately before this node,
+        // skipping over decorator nodes
+        if child.kind() == "decorator" {
+            // Preserve any comments collected so far — decorators may be between
+            // the JSDoc and the declaration
+            continue;
+        }
+        if child.kind() == "comment" {
+            let text = child.utf8_text(source.as_bytes()).ok().unwrap_or("");
+            let cleaned = clean_jsdoc(text);
+            if !cleaned.is_empty() {
+                comments.push(cleaned);
+            }
+        } else if !comments.is_empty() {
+            // Non-comment, non-decorator node between comments and our node — reset
+            comments.clear();
+        }
+    }
+
+    if comments.is_empty() {
+        None
+    } else {
+        Some(comments.join(" "))
+    }
+}
+
+/// Strip JSDoc markers and leading asterisks from a comment.
+/// Handles /** ... */ and // ... styles.
+fn clean_jsdoc(text: &str) -> String {
+    let text = text
+        .trim_start_matches("/**")
+        .trim_start_matches("/*")
+        .trim_start_matches("//")
+        .trim_end_matches("*/")
+        .trim();
+
+    text.lines()
+        .map(|line| line.trim().trim_start_matches('*').trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('@'))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string()
 }
 
 fn extract_ts_imports(

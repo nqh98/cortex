@@ -397,16 +397,47 @@ impl CortexServer {
             &request.symbol_name,
         ).await {
             Ok(c) => c,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": match &e {
-                        crate::error::CortexError::SymbolNotFound(_) => "symbol_not_found",
-                        crate::error::CortexError::FileNotFound(_) => "file_not_found",
-                        _ => "query_error"
-                    },
-                    "message": e.to_string()
+            Err(e) => {
+                let error_code = match &e {
+                    crate::error::CortexError::SymbolNotFound(_) => "symbol_not_found",
+                    crate::error::CortexError::FileNotFound(_) => "file_not_found",
+                    _ => "query_error",
+                };
+                let message = e.to_string();
+
+                // On symbol_not_found, suggest similar symbols
+                if matches!(&e, crate::error::CortexError::SymbolNotFound(_)) {
+                    let suggestions = search::search_symbols_paginated(
+                        &pool, &request.symbol_name, None, 5, 0,
+                    ).await.unwrap_or_default();
+
+                    if !suggestions.is_empty() {
+                        let suggested: Vec<serde_json::Value> = suggestions.iter().map(|s| {
+                            serde_json::json!({
+                                "name": s.name,
+                                "kind": s.kind,
+                                "file_path": s.path,
+                                "signature": s.signature
+                            })
+                        }).collect();
+
+                        return serde_json::json!({
+                            "error": {
+                                "code": error_code,
+                                "message": message,
+                                "suggestions": suggested
+                            }
+                        }).to_string();
+                    }
                 }
-            }).to_string(),
+
+                return serde_json::json!({
+                    "error": {
+                        "code": error_code,
+                        "message": message
+                    }
+                }).to_string();
+            }
         };
 
         let context_lines = request.context_lines.unwrap_or(0) as usize;

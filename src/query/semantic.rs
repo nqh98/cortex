@@ -7,13 +7,23 @@ pub async fn search_by_semantic(
     project_root: &str,
     limit: usize,
 ) -> Result<Vec<SymbolRow>> {
-    // Tokenize: split on whitespace, join with OR for FTS5
-    let tokens: Vec<&str> = query.split_whitespace().collect();
+    // Tokenize: split on whitespace, lowercase
+    let tokens: Vec<&str> = query
+        .split_whitespace()
+        .filter(|t| !t.is_empty())
+        .collect();
     if tokens.is_empty() {
         return Ok(Vec::new());
     }
 
-    let fts_query = tokens.join(" OR ");
+    // Use AND for multi-word queries (all terms must match somewhere),
+    // with each token matching as a prefix via * for partial matches.
+    // Single-word queries also use prefix matching.
+    let fts_query: String = tokens
+        .iter()
+        .map(|t| format!("{t}*"))
+        .collect::<Vec<_>>()
+        .join(" AND ");
 
     let rows = sqlx::query_as::<_, SymbolRow>(
         "SELECT s.id, f.project_root, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature
@@ -39,12 +49,19 @@ pub async fn count_semantic_results(
     query: &str,
     project_root: &str,
 ) -> Result<i64> {
-    let tokens: Vec<&str> = query.split_whitespace().collect();
+    let tokens: Vec<&str> = query
+        .split_whitespace()
+        .filter(|t| !t.is_empty())
+        .collect();
     if tokens.is_empty() {
         return Ok(0);
     }
 
-    let fts_query = tokens.join(" OR ");
+    let fts_query: String = tokens
+        .iter()
+        .map(|t| format!("{t}*"))
+        .collect::<Vec<_>>()
+        .join(" AND ");
 
     let count = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*)
@@ -71,8 +88,10 @@ pub async fn rebuild_fts_index(pool: &DbPool) -> Result<()> {
         .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
 
     sqlx::raw_sql(
-        "INSERT INTO symbol_search(rowid, name, signature, documentation)
-         SELECT id, name, signature, documentation FROM symbols",
+        "INSERT INTO symbol_search(rowid, name_tokens, signature, documentation, file_path_tokens)
+         SELECT s.id, s.name_tokens, s.signature, s.documentation,
+                REPLACE(REPLACE(REPLACE(f.path, '/', ' '), '.', ' '), '-', ' ')
+         FROM symbols s JOIN files f ON s.file_id = f.id",
     )
     .execute(pool)
     .await

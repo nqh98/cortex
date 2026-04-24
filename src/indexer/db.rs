@@ -59,6 +59,29 @@ async fn run_migrations(pool: &DbPool) -> crate::error::Result<()> {
         "UPDATE symbols SET kind = 'type_alias' WHERE kind = 'struct' AND file_id IN (SELECT id FROM files WHERE language IN ('typescript', 'javascript')) AND name IN (SELECT s.name FROM symbols s JOIN files f ON s.file_id = f.id WHERE f.language IN ('typescript', 'javascript') AND s.kind = 'struct' AND s.signature LIKE 'type %')"
     ).execute(pool).await.map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
 
+    // Migrate: add name_tokens column if missing
+    let has_name_tokens: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('symbols') WHERE name = 'name_tokens'"
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false);
+
+    if !has_name_tokens {
+        sqlx::raw_sql("ALTER TABLE symbols ADD COLUMN name_tokens TEXT")
+            .execute(pool)
+            .await
+            .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+        // Populate name_tokens for existing symbols
+        sqlx::raw_sql(
+            "UPDATE symbols SET name_tokens = name WHERE name_tokens IS NULL"
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+    }
+
     // FTS5 full-text search index
     let migration_fts = include_str!("../../migrations/002_add_fts.sql");
     sqlx::raw_sql(migration_fts)
@@ -114,12 +137,14 @@ pub async fn insert_symbols(
         .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
 
     for symbol in symbols {
+        let name_tokens = split_identifier(&symbol.name);
         sqlx::query(
-            "INSERT INTO symbols (file_id, name, kind, start_line, end_line, start_col, end_col, signature, documentation)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO symbols (file_id, name, name_tokens, kind, start_line, end_line, start_col, end_col, signature, documentation)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(file_id)
         .bind(&symbol.name)
+        .bind(&name_tokens)
         .bind(symbol.kind.as_str())
         .bind(symbol.start_line as i64)
         .bind(symbol.end_line as i64)
@@ -133,6 +158,58 @@ pub async fn insert_symbols(
     }
 
     Ok(())
+}
+
+/// Split a camelCase/snake_case/PascalCase identifier into lowercase tokens.
+/// e.g. "RfqBuyerService" → "rfq buyer service"
+/// e.g. "handle_parsed_result" → "handle parsed result"
+pub fn split_identifier(name: &str) -> String {
+    let mut tokens = Vec::new();
+    let mut start = 0;
+    let bytes = name.as_bytes();
+
+    for i in 1..name.len() {
+        let prev = bytes[i - 1];
+        let curr = bytes[i];
+
+        // Split at camelCase boundaries: lowercase→uppercase
+        if prev.is_ascii_lowercase() && curr.is_ascii_uppercase() {
+            if start < i {
+                tokens.push(&name[start..i]);
+            }
+            start = i;
+        }
+        // Split at uppercase→uppercase→lowercase boundaries (e.g. "HTTPServer" → "HTTP", "Server")
+        else if i + 1 < name.len()
+            && prev.is_ascii_uppercase()
+            && curr.is_ascii_uppercase()
+            && bytes[i + 1].is_ascii_lowercase()
+        {
+            if start < i - 1 {
+                tokens.push(&name[start..i - 1]);
+                start = i - 1;
+            }
+        }
+        // Split at underscore
+        else if curr == b'_' {
+            if start < i {
+                tokens.push(&name[start..i]);
+            }
+            start = i + 1;
+        }
+        // Split at dot (for file paths or qualified names)
+        else if curr == b'.' {
+            if start < i {
+                tokens.push(&name[start..i]);
+            }
+            start = i + 1;
+        }
+    }
+    if start < name.len() {
+        tokens.push(&name[start..]);
+    }
+
+    tokens.join(" ").to_lowercase()
 }
 
 pub async fn search_symbols(
@@ -310,6 +387,42 @@ pub async fn get_symbols_by_kind(
     }
 
     Ok(result)
+}
+
+/// List all indexed projects with their stats
+pub async fn list_all_projects(pool: &DbPool) -> crate::error::Result<Vec<ProjectInfo>> {
+    let rows: Vec<(String, i64, i64, Option<String>)> = sqlx::query_as(
+        "SELECT f.project_root,
+                COUNT(DISTINCT f.id) as file_count,
+                COUNT(s.id) as symbol_count,
+                MAX(f.last_indexed) as last_indexed
+         FROM files f
+         LEFT JOIN symbols s ON s.file_id = f.id
+         GROUP BY f.project_root
+         ORDER BY f.project_root",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(project_root, file_count, symbol_count, last_indexed)| ProjectInfo {
+            project_root,
+            file_count: file_count as u32,
+            symbol_count: symbol_count as u32,
+            last_indexed,
+        })
+        .collect())
+}
+
+/// Info about an indexed project
+#[derive(Debug)]
+pub struct ProjectInfo {
+    pub project_root: String,
+    pub file_count: u32,
+    pub symbol_count: u32,
+    pub last_indexed: Option<String>,
 }
 
 /// Get symbols grouped by language
