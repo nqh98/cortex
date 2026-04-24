@@ -3,6 +3,72 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Result of exporting a task report
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ExportReportResult {
+    /// Unique report identifier
+    pub report_id: String,
+    /// Path to the saved report file
+    pub file_path: String,
+    /// Project root path
+    pub project_root: String,
+    /// ISO 8601 timestamp when the report was saved
+    pub timestamp: String,
+}
+
+/// Result of synthesizing reports
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SynthesizeReportsResult {
+    /// Total number of reports found
+    pub total_reports: usize,
+    /// Number of reports actually analyzed (may be less than total due to limit)
+    pub reports_analyzed: usize,
+    /// Date range of analyzed reports
+    pub date_range: Option<DateRangeResult>,
+    /// Count of reports by task type
+    pub task_type_breakdown: HashMap<String, u32>,
+    /// Files that appear most frequently across reports
+    pub frequently_modified_files: Vec<FileFrequencyResult>,
+    /// Issues found across multiple reports, sorted by frequency
+    pub recurring_issues: Vec<IssueFrequencyResult>,
+    /// Improvement suggestions aggregated across reports, sorted by frequency
+    pub improvement_suggestions: Vec<SuggestionFrequencyResult>,
+    /// Cortex tool usage frequency
+    pub tools_usage: Vec<ToolUsageResult>,
+    /// Auto-generated narrative summary
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DateRangeResult {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FileFrequencyResult {
+    pub file_path: String,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct IssueFrequencyResult {
+    pub issue: String,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SuggestionFrequencyResult {
+    pub suggestion: String,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ToolUsageResult {
+    pub tool: String,
+    pub count: u32,
+}
+
 /// Semantic search result
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SemanticSearchResult {

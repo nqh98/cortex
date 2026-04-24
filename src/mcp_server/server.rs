@@ -2,9 +2,10 @@ use crate::config::Config;
 use crate::indexer::{db, Indexer};
 use crate::mcp_server::models::{
     CodeContextResult, ContentMatchEntry, ContentSearchResult, DirectoryListing,
-    DocumentSymbolEntry, DocumentSymbolResult, FindReferencesResult, ImportAnalysisResult,
-    ImportEntry, IndexResult, IndexStatus, ReferenceMatchEntry, SearchResult, SemanticSearchResult,
-    SymbolMatch, SymbolStats,
+    DocumentSymbolEntry, DocumentSymbolResult, ExportReportResult, FileFrequencyResult,
+    FindReferencesResult, ImportAnalysisResult, ImportEntry, IndexResult, IndexStatus,
+    IssueFrequencyResult, ReferenceMatchEntry, SearchResult, SemanticSearchResult,
+    SuggestionFrequencyResult, SymbolMatch, SymbolStats, SynthesizeReportsResult, ToolUsageResult,
 };
 use crate::query::{content, context, document, imports_query, references, search, semantic};
 use crate::scanner::walker;
@@ -38,9 +39,7 @@ impl CortexServer {
 
     async fn get_pool(&self) -> crate::error::Result<&db::DbPool> {
         let db_path = format!("sqlite:{}", self.config.database.path);
-        self.pool
-            .get_or_try_init(|| db::init_pool(&db_path))
-            .await
+        self.pool.get_or_try_init(|| db::init_pool(&db_path)).await
     }
 
     async fn ensure_indexed(&self, project_root: &str) -> crate::error::Result<()> {
@@ -72,7 +71,9 @@ impl CortexServer {
             indexer.index_project(path).await?;
         }
 
-        self.last_index_check.lock().await
+        self.last_index_check
+            .lock()
+            .await
             .insert(project_root.to_string(), Instant::now());
 
         Ok(())
@@ -81,7 +82,8 @@ impl CortexServer {
 
 fn parse_db_timestamp(ts: &str) -> SystemTime {
     // SQLite CURRENT_TIMESTAMP format: "YYYY-MM-DD HH:MM:SS"
-    let parts: Vec<u64> = ts.split(|c: char| !c.is_ascii_digit())
+    let parts: Vec<u64> = ts
+        .split(|c: char| !c.is_ascii_digit())
         .filter_map(|s| s.parse().ok())
         .collect();
 
@@ -89,11 +91,12 @@ fn parse_db_timestamp(ts: &str) -> SystemTime {
         return SystemTime::UNIX_EPOCH;
     }
 
-    let [year, month, day, hour, minute, second] = [parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]];
+    let [year, month, day, hour, minute, second] =
+        [parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]];
 
     // Simple days-since-epoch calculation
     let days = days_from_ce(year, month as u8, day as u8);
-    let secs = (days as u64) * 86400 + hour * 3600 + minute * 60 + second;
+    let secs = days * 86400 + hour * 3600 + minute * 60 + second;
     // Days from CE to Unix epoch (1970-01-01) = 719163
     let unix_secs = secs.saturating_sub(719163 * 86400);
 
@@ -105,13 +108,14 @@ fn days_from_ce(year: u64, month: u8, day: u8) -> u64 {
     let y = year as i64;
     let m = month as i64;
     let d = day as i64;
-    let days = (y * 365 + y / 4 - y / 100 + y / 400
-        + (153 * m + 2) / 5 + d - 306) as i64;
+    let days = y * 365 + y / 4 - y / 100 + y / 400 + (153 * m + 2) / 5 + d - 306;
     days as u64 + 366 // offset to CE
 }
 
 fn has_stale_files(project_path: &Path, since: SystemTime) -> bool {
-    let Ok(files) = walker::walk_directory(project_path) else { return false };
+    let Ok(files) = walker::walk_directory(project_path) else {
+        return false;
+    };
 
     for file_entry in &files {
         if let Ok(metadata) = std::fs::metadata(&file_entry.path) {
@@ -149,10 +153,14 @@ pub struct GetCodeContextRequest {
     #[schemars(description = "Name of the symbol to retrieve")]
     pub symbol_name: String,
     /// Relative path to disambiguate when multiple symbols have the same name
-    #[schemars(description = "Relative path to the source file (e.g. src/parser/mod.rs). Use when multiple symbols have the same name to disambiguate.")]
+    #[schemars(
+        description = "Relative path to the source file (e.g. src/parser/mod.rs). Use when multiple symbols have the same name to disambiguate."
+    )]
     pub file_path: Option<String>,
     /// Include surrounding context (lines before/after the symbol)
-    #[schemars(description = "Number of context lines to include before and after the symbol (default: 0)")]
+    #[schemars(
+        description = "Number of context lines to include before and after the symbol (default: 0)"
+    )]
     pub context_lines: Option<u32>,
 }
 
@@ -174,7 +182,9 @@ pub struct ListDirectoryRequest {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListDocumentSymbolsRequest {
     /// Relative path to the source file within the project
-    #[schemars(description = "Relative path to the source file within the project (e.g. src/parser/mod.rs)")]
+    #[schemars(
+        description = "Relative path to the source file within the project (e.g. src/parser/mod.rs)"
+    )]
     pub file_path: String,
     /// Absolute path to the project root directory
     #[schemars(description = "Absolute path to the project root directory")]
@@ -208,7 +218,9 @@ pub struct FindReferencesRequest {
     #[schemars(description = "Absolute path to the project root directory")]
     pub path: String,
     /// Relative path to disambiguate when multiple symbols share the same name
-    #[schemars(description = "Relative path to disambiguate when multiple symbols share the same name")]
+    #[schemars(
+        description = "Relative path to disambiguate when multiple symbols share the same name"
+    )]
     pub file_path: Option<String>,
     /// Maximum number of results (default: 50)
     #[schemars(description = "Maximum number of results to return (default: 50, max: 100)")]
@@ -219,7 +231,9 @@ pub struct FindReferencesRequest {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchBySemanticRequest {
     /// Natural language or keyword query to search for
-    #[schemars(description = "Natural language or keyword query to search for (e.g., 'rate limiting', 'database query'). Searches symbol names, signatures, and documentation.")]
+    #[schemars(
+        description = "Natural language or keyword query to search for (e.g., 'rate limiting', 'database query'). Searches symbol names, signatures, and documentation."
+    )]
     pub query: String,
     /// Absolute path to the project root directory
     #[schemars(description = "Absolute path to the project root directory")]
@@ -233,14 +247,62 @@ pub struct SearchBySemanticRequest {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetImportsRequest {
     /// Relative path to the source file within the project
-    #[schemars(description = "Relative path to the source file within the project (e.g. src/parser/mod.rs)")]
+    #[schemars(
+        description = "Relative path to the source file within the project (e.g. src/parser/mod.rs)"
+    )]
     pub file_path: String,
     /// Absolute path to the project root directory
     #[schemars(description = "Absolute path to the project root directory")]
     pub project_root: String,
     /// Direction: 'outgoing' (what this file imports), 'incoming' (what imports this file), or 'both'
-    #[schemars(description = "Direction of import analysis: 'outgoing' (what this file imports), 'incoming' (what imports this file), or 'both' (default: both)")]
+    #[schemars(
+        description = "Direction of import analysis: 'outgoing' (what this file imports), 'incoming' (what imports this file), or 'both' (default: both)"
+    )]
     pub direction: Option<String>,
+}
+
+/// Export report request parameters
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExportReportRequest {
+    /// Absolute path to the project root directory
+    #[schemars(description = "Absolute path to the project root directory")]
+    pub project_root: String,
+    /// Type of task completed: bug_fix, feature, refactoring, exploration, review, or other
+    #[schemars(
+        description = "Type of task completed: bug_fix, feature, refactoring, exploration, review, or other"
+    )]
+    pub task_type: String,
+    /// Summary of what was accomplished
+    #[schemars(description = "Summary of what was accomplished")]
+    pub summary: String,
+    /// List of Cortex tool names used during the task
+    #[schemars(
+        description = "List of Cortex tool names used during the task (e.g. ['search_symbols', 'get_code_context'])"
+    )]
+    pub tools_used: Option<Vec<String>>,
+    /// List of file paths that were modified
+    #[schemars(description = "List of file paths that were modified during the task")]
+    pub files_modified: Option<Vec<String>>,
+    /// List of issues discovered during the task
+    #[schemars(description = "List of issues discovered during the task")]
+    pub issues_found: Option<Vec<String>>,
+    /// List of suggestions for improving the codebase
+    #[schemars(description = "List of suggestions for improving the codebase")]
+    pub improvement_suggestions: Option<Vec<String>>,
+    /// Arbitrary key-value metadata for additional context
+    #[schemars(description = "Arbitrary key-value metadata for additional context")]
+    pub metadata: Option<std::collections::HashMap<String, String>>,
+}
+
+/// Synthesize reports request parameters
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SynthesizeReportsRequest {
+    /// Absolute path to the project root directory
+    #[schemars(description = "Absolute path to the project root directory")]
+    pub project_root: String,
+    /// Maximum number of reports to analyze (default: 50, newest first)
+    #[schemars(description = "Maximum number of reports to analyze (default: 50, newest first)")]
+    pub limit: Option<usize>,
 }
 
 /// Index project request parameters
@@ -286,7 +348,9 @@ impl CortexServer {
     /// - Use pagination: {"limit": 10, "offset": 20} to browse results
     ///
     /// Returns structured symbol metadata with file locations.
-    #[tool(description = "Search for code symbols by name pattern matching. Supports filtering by kind and pagination. Returns structured JSON with symbol metadata and file locations.")]
+    #[tool(
+        description = "Search for code symbols by name pattern matching. Supports filtering by kind and pagination. Returns structured JSON with symbol metadata and file locations."
+    )]
     async fn search_symbols(
         &self,
         Parameters(request): Parameters<SearchSymbolsRequest>,
@@ -297,17 +361,21 @@ impl CortexServer {
                     "code": "invalid_parameters",
                     "message": "Query cannot be empty"
                 }
-            }).to_string();
+            })
+            .to_string();
         }
 
         let pool = match self.get_pool().await {
             Ok(p) => p,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Failed to connect to database: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to connect to database: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
         let limit = request.limit.unwrap_or(50).min(100) as usize;
@@ -315,25 +383,31 @@ impl CortexServer {
         let kind_filter = request.kind.map(|k| k.as_str());
 
         let results = match search::search_symbols_paginated(
-            &pool,
+            pool,
             &request.query,
-            kind_filter.as_deref(),
+            kind_filter,
             limit,
             offset,
-        ).await {
+        )
+        .await
+        {
             Ok(r) => r,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Search failed: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Search failed: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
-        let total_count = match search::count_symbols(&pool, &request.query, kind_filter.as_deref()).await {
-            Ok(c) => c as u32,
-            Err(_) => results.len() as u32, // Fallback to returned count
-        };
+        let total_count =
+            match search::count_symbols(pool, &request.query, kind_filter).await {
+                Ok(c) => c as u32,
+                Err(_) => results.len() as u32, // Fallback to returned count
+            };
 
         let has_more = (offset + limit) < total_count as usize;
 
@@ -355,19 +429,25 @@ impl CortexServer {
             symbols,
             total_count,
             has_more,
-        }).unwrap_or_else(|e| serde_json::json!({
-            "error": {
-                "code": "serialization_error",
-                "message": format!("Failed to serialize results: {e}")
-            }
-        }).to_string())
+        })
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize results: {e}")
+                }
+            })
+            .to_string()
+        })
     }
 
     /// Get the source code for a symbol by name.
     ///
     /// Use file_path to disambiguate when multiple symbols have the same name.
     /// Returns the full implementation with optional context lines.
-    #[tool(description = "Get the source code for a symbol by name. Use file_path to disambiguate when multiple symbols have the same name. Returns structured JSON with full implementation and optional context lines.")]
+    #[tool(
+        description = "Get the source code for a symbol by name. Use file_path to disambiguate when multiple symbols have the same name. Returns structured JSON with full implementation and optional context lines."
+    )]
     async fn get_code_context(
         &self,
         Parameters(request): Parameters<GetCodeContextRequest>,
@@ -378,24 +458,30 @@ impl CortexServer {
                     "code": "invalid_parameters",
                     "message": "Symbol name cannot be empty"
                 }
-            }).to_string();
+            })
+            .to_string();
         }
 
         let pool = match self.get_pool().await {
             Ok(p) => p,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Failed to connect to database: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to connect to database: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
         let ctx = match context::get_code_context(
-            &pool,
+            pool,
             request.file_path.as_deref(),
             &request.symbol_name,
-        ).await {
+        )
+        .await
+        {
             Ok(c) => c,
             Err(e) => {
                 let error_code = match &e {
@@ -407,19 +493,23 @@ impl CortexServer {
 
                 // On symbol_not_found, suggest similar symbols
                 if matches!(&e, crate::error::CortexError::SymbolNotFound(_)) {
-                    let suggestions = search::search_symbols_paginated(
-                        &pool, &request.symbol_name, None, 5, 0,
-                    ).await.unwrap_or_default();
+                    let suggestions =
+                        search::search_symbols_paginated(pool, &request.symbol_name, None, 5, 0)
+                            .await
+                            .unwrap_or_default();
 
                     if !suggestions.is_empty() {
-                        let suggested: Vec<serde_json::Value> = suggestions.iter().map(|s| {
-                            serde_json::json!({
-                                "name": s.name,
-                                "kind": s.kind,
-                                "file_path": s.path,
-                                "signature": s.signature
+                        let suggested: Vec<serde_json::Value> = suggestions
+                            .iter()
+                            .map(|s| {
+                                serde_json::json!({
+                                    "name": s.name,
+                                    "kind": s.kind,
+                                    "file_path": s.path,
+                                    "signature": s.signature
+                                })
                             })
-                        }).collect();
+                            .collect();
 
                         return serde_json::json!({
                             "error": {
@@ -427,7 +517,8 @@ impl CortexServer {
                                 "message": message,
                                 "suggestions": suggested
                             }
-                        }).to_string();
+                        })
+                        .to_string();
                     }
                 }
 
@@ -436,7 +527,8 @@ impl CortexServer {
                         "code": error_code,
                         "message": message
                     }
-                }).to_string();
+                })
+                .to_string();
             }
         };
 
@@ -453,42 +545,62 @@ impl CortexServer {
             signature: ctx.signature,
             code,
             preview,
-            context_before: if context_before.is_empty() { None } else { Some(context_before) },
-            context_after: if context_after.is_empty() { None } else { Some(context_after) },
-        }).unwrap_or_else(|e| serde_json::json!({
-            "error": {
-                "code": "serialization_error",
-                "message": format!("Failed to serialize context: {e}")
-            }
-        }).to_string())
+            context_before: if context_before.is_empty() {
+                None
+            } else {
+                Some(context_before)
+            },
+            context_after: if context_after.is_empty() {
+                None
+            } else {
+                Some(context_after)
+            },
+        })
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize context: {e}")
+                }
+            })
+            .to_string()
+        })
     }
 
     /// List all symbols defined in a specific file (like LSP documentSymbol).
     ///
     /// Returns symbols sorted by line with parent-child hierarchy.
-    #[tool(description = "List all symbols defined in a specific file, sorted by line with parent-child hierarchy. Returns structured JSON with symbol metadata.")]
+    #[tool(
+        description = "List all symbols defined in a specific file, sorted by line with parent-child hierarchy. Returns structured JSON with symbol metadata."
+    )]
     async fn list_document_symbols(
         &self,
         Parameters(request): Parameters<ListDocumentSymbolsRequest>,
     ) -> String {
         let pool = match self.get_pool().await {
             Ok(p) => p,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Failed to connect to database: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to connect to database: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
         let project_root = match std::path::Path::new(&request.project_root).canonicalize() {
             Ok(p) => p.to_string_lossy().to_string(),
-            Err(_) => return serde_json::json!({
-                "error": {
-                    "code": "invalid_path",
-                    "message": format!("Project root not found: {}", request.project_root)
-                }
-            }).to_string(),
+            Err(_) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "invalid_path",
+                        "message": format!("Project root not found: {}", request.project_root)
+                    }
+                })
+                .to_string()
+            }
         };
 
         if let Err(e) = self.ensure_indexed(&project_root).await {
@@ -497,18 +609,23 @@ impl CortexServer {
                     "code": "auto_index_failed",
                     "message": format!("Auto-indexing failed: {e}")
                 }
-            }).to_string();
+            })
+            .to_string();
         }
 
-        let rows = match document::list_document_symbols(&pool, &project_root, &request.file_path).await {
-            Ok(r) => r,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Query failed: {e}")
+        let rows =
+            match document::list_document_symbols(pool, &project_root, &request.file_path).await {
+                Ok(r) => r,
+                Err(e) => {
+                    return serde_json::json!({
+                        "error": {
+                            "code": "database_error",
+                            "message": format!("Query failed: {e}")
+                        }
+                    })
+                    .to_string()
                 }
-            }).to_string(),
-        };
+            };
 
         if rows.is_empty() {
             return serde_json::json!({
@@ -520,18 +637,21 @@ impl CortexServer {
         }
 
         // Build hierarchy: convert rows to entries, then nest children
-        let entries: Vec<DocumentSymbolEntry> = rows.into_iter().map(|row| DocumentSymbolEntry {
-            id: row.id,
-            name: row.name,
-            kind: parse_symbol_kind(&row.kind),
-            start_line: row.start_line,
-            end_line: row.end_line,
-            start_col: row.start_col,
-            end_col: row.end_col,
-            signature: row.signature,
-            documentation: row.documentation,
-            children: Vec::new(),
-        }).collect();
+        let entries: Vec<DocumentSymbolEntry> = rows
+            .into_iter()
+            .map(|row| DocumentSymbolEntry {
+                id: row.id,
+                name: row.name,
+                kind: parse_symbol_kind(&row.kind),
+                start_line: row.start_line,
+                end_line: row.end_line,
+                start_col: row.start_col,
+                end_col: row.end_col,
+                signature: row.signature,
+                documentation: row.documentation,
+                children: Vec::new(),
+            })
+            .collect();
 
         let hierarchical = build_symbol_hierarchy(entries);
 
@@ -540,18 +660,24 @@ impl CortexServer {
             project_root,
             language: None,
             symbols: hierarchical,
-        }).unwrap_or_else(|e| serde_json::json!({
-            "error": {
-                "code": "serialization_error",
-                "message": format!("Failed to serialize result: {e}")
-            }
-        }).to_string())
+        })
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize result: {e}")
+                }
+            })
+            .to_string()
+        })
     }
 
     /// Search for text patterns within indexed source files (like grep).
     ///
     /// Searches file contents using regex or plain text. Finds TODO comments, raw SQL, security patterns, etc.
-    #[tool(description = "Search for text patterns within indexed source files (regex or plain text). Returns matched lines with surrounding context. Useful for finding TODOs, raw SQL, security patterns, etc.")]
+    #[tool(
+        description = "Search for text patterns within indexed source files (regex or plain text). Returns matched lines with surrounding context. Useful for finding TODOs, raw SQL, security patterns, etc."
+    )]
     async fn search_content(
         &self,
         Parameters(request): Parameters<SearchContentRequest>,
@@ -562,27 +688,34 @@ impl CortexServer {
                     "code": "invalid_parameters",
                     "message": "Pattern cannot be empty"
                 }
-            }).to_string();
+            })
+            .to_string();
         }
 
         let pool = match self.get_pool().await {
             Ok(p) => p,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Failed to connect to database: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to connect to database: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
         let project_root = match std::path::Path::new(&request.path).canonicalize() {
             Ok(p) => p.to_string_lossy().to_string(),
-            Err(_) => return serde_json::json!({
-                "error": {
-                    "code": "invalid_path",
-                    "message": format!("Project root not found: {}", request.path)
-                }
-            }).to_string(),
+            Err(_) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "invalid_path",
+                        "message": format!("Project root not found: {}", request.path)
+                    }
+                })
+                .to_string()
+            }
         };
 
         if let Err(e) = self.ensure_indexed(&project_root).await {
@@ -591,51 +724,66 @@ impl CortexServer {
                     "code": "auto_index_failed",
                     "message": format!("Auto-indexing failed: {e}")
                 }
-            }).to_string();
+            })
+            .to_string();
         }
 
         let limit = request.limit.unwrap_or(50).min(200) as usize;
         let ext = request.file_extension.as_deref();
 
-        let matches = match content::search_content(&pool, &project_root, &request.pattern, ext, limit).await {
-            Ok(m) => m,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "search_error",
-                    "message": format!("Content search failed: {e}")
+        let matches =
+            match content::search_content(pool, &project_root, &request.pattern, ext, limit).await
+            {
+                Ok(m) => m,
+                Err(e) => {
+                    return serde_json::json!({
+                        "error": {
+                            "code": "search_error",
+                            "message": format!("Content search failed: {e}")
+                        }
+                    })
+                    .to_string()
                 }
-            }).to_string(),
-        };
+            };
 
         let total_count = matches.len() as u32;
         let has_more = total_count >= limit as u32;
 
-        let entries: Vec<ContentMatchEntry> = matches.into_iter().map(|m| ContentMatchEntry {
-            file_path: m.file_path,
-            project_root: m.project_root,
-            line_number: m.line_number,
-            line_content: m.line_content,
-            context_before: m.context_before,
-            context_after: m.context_after,
-        }).collect();
+        let entries: Vec<ContentMatchEntry> = matches
+            .into_iter()
+            .map(|m| ContentMatchEntry {
+                file_path: m.file_path,
+                project_root: m.project_root,
+                line_number: m.line_number,
+                line_content: m.line_content,
+                context_before: m.context_before,
+                context_after: m.context_after,
+            })
+            .collect();
 
         serde_json::to_string(&ContentSearchResult {
             pattern: request.pattern,
             total_count,
             has_more,
             matches: entries,
-        }).unwrap_or_else(|e| serde_json::json!({
-            "error": {
-                "code": "serialization_error",
-                "message": format!("Failed to serialize result: {e}")
-            }
-        }).to_string())
+        })
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize result: {e}")
+                }
+            })
+            .to_string()
+        })
     }
 
     /// Find all references to a symbol across the project.
     ///
     /// Classifies each reference as import, call, type usage, definition, or other.
-    #[tool(description = "Find all references to a symbol across the project. Classifies references as import, call, type_usage, definition, or other. Returns file locations with line content.")]
+    #[tool(
+        description = "Find all references to a symbol across the project. Classifies references as import, call, type_usage, definition, or other. Returns file locations with line content."
+    )]
     async fn find_references(
         &self,
         Parameters(request): Parameters<FindReferencesRequest>,
@@ -646,27 +794,34 @@ impl CortexServer {
                     "code": "invalid_parameters",
                     "message": "Symbol name cannot be empty"
                 }
-            }).to_string();
+            })
+            .to_string();
         }
 
         let pool = match self.get_pool().await {
             Ok(p) => p,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Failed to connect to database: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to connect to database: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
         let project_root = match std::path::Path::new(&request.path).canonicalize() {
             Ok(p) => p.to_string_lossy().to_string(),
-            Err(_) => return serde_json::json!({
-                "error": {
-                    "code": "invalid_path",
-                    "message": format!("Project root not found: {}", request.path)
-                }
-            }).to_string(),
+            Err(_) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "invalid_path",
+                        "message": format!("Project root not found: {}", request.path)
+                    }
+                })
+                .to_string()
+            }
         };
 
         if let Err(e) = self.ensure_indexed(&project_root).await {
@@ -675,61 +830,76 @@ impl CortexServer {
                     "code": "auto_index_failed",
                     "message": format!("Auto-indexing failed: {e}")
                 }
-            }).to_string();
+            })
+            .to_string();
         }
 
         let limit = request.limit.unwrap_or(50).min(100) as usize;
 
         let refs = match references::find_references(
-            &pool,
+            pool,
             &project_root,
             &request.symbol_name,
             request.file_path.as_deref(),
             limit,
-        ).await {
+        )
+        .await
+        {
             Ok(r) => r,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "query_error",
-                    "message": format!("Find references failed: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "query_error",
+                        "message": format!("Find references failed: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
         let total_count = refs.len() as u32;
         let has_more = total_count >= limit as u32;
 
-        let entries: Vec<ReferenceMatchEntry> = refs.into_iter().map(|r| ReferenceMatchEntry {
-            file_path: r.file_path,
-            project_root: r.project_root,
-            line_number: r.line_number,
-            line_content: r.line_content,
-            reference_type: match r.reference_type {
-                references::ReferenceType::Import => "import".to_string(),
-                references::ReferenceType::Call => "call".to_string(),
-                references::ReferenceType::TypeUsage => "type_usage".to_string(),
-                references::ReferenceType::Definition => "definition".to_string(),
-                references::ReferenceType::Other => "other".to_string(),
-            },
-        }).collect();
+        let entries: Vec<ReferenceMatchEntry> = refs
+            .into_iter()
+            .map(|r| ReferenceMatchEntry {
+                file_path: r.file_path,
+                project_root: r.project_root,
+                line_number: r.line_number,
+                line_content: r.line_content,
+                reference_type: match r.reference_type {
+                    references::ReferenceType::Import => "import".to_string(),
+                    references::ReferenceType::Call => "call".to_string(),
+                    references::ReferenceType::TypeUsage => "type_usage".to_string(),
+                    references::ReferenceType::Definition => "definition".to_string(),
+                    references::ReferenceType::Other => "other".to_string(),
+                },
+            })
+            .collect();
 
         serde_json::to_string(&FindReferencesResult {
             symbol_name: request.symbol_name,
             total_count,
             has_more,
             references: entries,
-        }).unwrap_or_else(|e| serde_json::json!({
-            "error": {
-                "code": "serialization_error",
-                "message": format!("Failed to serialize result: {e}")
-            }
-        }).to_string())
+        })
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize result: {e}")
+                }
+            })
+            .to_string()
+        })
     }
 
     /// Search for symbols by concept or keyword (semantic search).
     ///
     /// Uses full-text search across symbol names, signatures, and documentation.
-    #[tool(description = "Search for symbols by concept or keyword using full-text search. Searches symbol names, signatures, and documentation. E.g., 'rate limiting', 'database connection', 'error handling'.")]
+    #[tool(
+        description = "Search for symbols by concept or keyword using full-text search. Searches symbol names, signatures, and documentation. E.g., 'rate limiting', 'database connection', 'error handling'."
+    )]
     async fn search_by_semantic(
         &self,
         Parameters(request): Parameters<SearchBySemanticRequest>,
@@ -740,27 +910,34 @@ impl CortexServer {
                     "code": "invalid_parameters",
                     "message": "Query cannot be empty"
                 }
-            }).to_string();
+            })
+            .to_string();
         }
 
         let pool = match self.get_pool().await {
             Ok(p) => p,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Failed to connect to database: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to connect to database: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
         let project_root = match std::path::Path::new(&request.path).canonicalize() {
             Ok(p) => p.to_string_lossy().to_string(),
-            Err(_) => return serde_json::json!({
-                "error": {
-                    "code": "invalid_path",
-                    "message": format!("Project root not found: {}", request.path)
-                }
-            }).to_string(),
+            Err(_) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "invalid_path",
+                        "message": format!("Project root not found: {}", request.path)
+                    }
+                })
+                .to_string()
+            }
         };
 
         if let Err(e) = self.ensure_indexed(&project_root).await {
@@ -769,78 +946,96 @@ impl CortexServer {
                     "code": "auto_index_failed",
                     "message": format!("Auto-indexing failed: {e}")
                 }
-            }).to_string();
+            })
+            .to_string();
         }
 
         let limit = request.limit.unwrap_or(50).min(100) as usize;
 
-        let results = match semantic::search_by_semantic(&pool, &request.query, &project_root, limit).await {
-            Ok(r) => r,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "query_error",
-                    "message": format!("Semantic search failed: {e}")
+        let results =
+            match semantic::search_by_semantic(pool, &request.query, &project_root, limit).await {
+                Ok(r) => r,
+                Err(e) => {
+                    return serde_json::json!({
+                        "error": {
+                            "code": "query_error",
+                            "message": format!("Semantic search failed: {e}")
+                        }
+                    })
+                    .to_string()
                 }
-            }).to_string(),
-        };
+            };
 
-        let total_count = match semantic::count_semantic_results(&pool, &request.query, &project_root).await {
-            Ok(c) => c as u32,
-            Err(_) => results.len() as u32,
-        };
+        let total_count =
+            match semantic::count_semantic_results(pool, &request.query, &project_root).await {
+                Ok(c) => c as u32,
+                Err(_) => results.len() as u32,
+            };
 
         let has_more = (results.len()) < total_count as usize;
 
-        let symbols: Vec<SymbolMatch> = results.into_iter().map(|row| SymbolMatch {
-            id: row.id,
-            name: row.name,
-            kind: parse_symbol_kind(&row.kind),
-            file_path: row.path,
-            project_root: row.project_root,
-            start_line: row.start_line,
-            end_line: row.end_line,
-            signature: row.signature,
-        }).collect();
+        let symbols: Vec<SymbolMatch> = results
+            .into_iter()
+            .map(|row| SymbolMatch {
+                id: row.id,
+                name: row.name,
+                kind: parse_symbol_kind(&row.kind),
+                file_path: row.path,
+                project_root: row.project_root,
+                start_line: row.start_line,
+                end_line: row.end_line,
+                signature: row.signature,
+            })
+            .collect();
 
         serde_json::to_string(&SemanticSearchResult {
             query: request.query,
             total_count,
             has_more,
             symbols,
-        }).unwrap_or_else(|e| serde_json::json!({
-            "error": {
-                "code": "serialization_error",
-                "message": format!("Failed to serialize result: {e}")
-            }
-        }).to_string())
+        })
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize result: {e}")
+                }
+            })
+            .to_string()
+        })
     }
 
     /// Analyze import dependencies for a file.
     ///
     /// Shows outgoing imports (what this file imports) and/or incoming imports (what imports this file).
-    #[tool(description = "Analyze import dependencies for a file. Shows outgoing (what this file imports) and incoming (what imports this file) dependencies. Returns structured JSON with import details.")]
-    async fn get_imports(
-        &self,
-        Parameters(request): Parameters<GetImportsRequest>,
-    ) -> String {
+    #[tool(
+        description = "Analyze import dependencies for a file. Shows outgoing (what this file imports) and incoming (what imports this file) dependencies. Returns structured JSON with import details."
+    )]
+    async fn get_imports(&self, Parameters(request): Parameters<GetImportsRequest>) -> String {
         let pool = match self.get_pool().await {
             Ok(p) => p,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Failed to connect to database: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to connect to database: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
         let project_root = match std::path::Path::new(&request.project_root).canonicalize() {
             Ok(p) => p.to_string_lossy().to_string(),
-            Err(_) => return serde_json::json!({
-                "error": {
-                    "code": "invalid_path",
-                    "message": format!("Project root not found: {}", request.project_root)
-                }
-            }).to_string(),
+            Err(_) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "invalid_path",
+                        "message": format!("Project root not found: {}", request.project_root)
+                    }
+                })
+                .to_string()
+            }
         };
 
         if let Err(e) = self.ensure_indexed(&project_root).await {
@@ -849,60 +1044,81 @@ impl CortexServer {
                     "code": "auto_index_failed",
                     "message": format!("Auto-indexing failed: {e}")
                 }
-            }).to_string();
+            })
+            .to_string();
         }
 
         let direction = request.direction.as_deref().unwrap_or("both");
 
-        let analysis = match imports_query::get_imports(&pool, &project_root, &request.file_path, direction).await {
-            Ok(a) => a,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "query_error",
-                    "message": format!("Import analysis failed: {e}")
+        let analysis =
+            match imports_query::get_imports(pool, &project_root, &request.file_path, direction)
+                .await
+            {
+                Ok(a) => a,
+                Err(e) => {
+                    return serde_json::json!({
+                        "error": {
+                            "code": "query_error",
+                            "message": format!("Import analysis failed: {e}")
+                        }
+                    })
+                    .to_string()
                 }
-            }).to_string(),
-        };
+            };
 
-        let outgoing: Vec<ImportEntry> = analysis.outgoing.into_iter().map(|r| ImportEntry {
-            id: r.id,
-            imported_symbol: r.imported_symbol,
-            imported_from_path: r.imported_from_path,
-            import_type: r.import_type,
-            start_line: r.start_line,
-            raw_statement: r.raw_statement,
-            file_path: r.file_path,
-            project_root: r.project_root,
-        }).collect();
+        let outgoing: Vec<ImportEntry> = analysis
+            .outgoing
+            .into_iter()
+            .map(|r| ImportEntry {
+                id: r.id,
+                imported_symbol: r.imported_symbol,
+                imported_from_path: r.imported_from_path,
+                import_type: r.import_type,
+                start_line: r.start_line,
+                raw_statement: r.raw_statement,
+                file_path: r.file_path,
+                project_root: r.project_root,
+            })
+            .collect();
 
-        let incoming: Vec<ImportEntry> = analysis.incoming.into_iter().map(|r| ImportEntry {
-            id: r.id,
-            imported_symbol: r.imported_symbol,
-            imported_from_path: r.imported_from_path,
-            import_type: r.import_type,
-            start_line: r.start_line,
-            raw_statement: r.raw_statement,
-            file_path: r.file_path,
-            project_root: r.project_root,
-        }).collect();
+        let incoming: Vec<ImportEntry> = analysis
+            .incoming
+            .into_iter()
+            .map(|r| ImportEntry {
+                id: r.id,
+                imported_symbol: r.imported_symbol,
+                imported_from_path: r.imported_from_path,
+                import_type: r.import_type,
+                start_line: r.start_line,
+                raw_statement: r.raw_statement,
+                file_path: r.file_path,
+                project_root: r.project_root,
+            })
+            .collect();
 
         serde_json::to_string(&ImportAnalysisResult {
             file_path: request.file_path,
             project_root,
             outgoing,
             incoming,
-        }).unwrap_or_else(|e| serde_json::json!({
-            "error": {
-                "code": "serialization_error",
-                "message": format!("Failed to serialize result: {e}")
-            }
-        }).to_string())
+        })
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize result: {e}")
+                }
+            })
+            .to_string()
+        })
     }
 
     /// List the directory structure of a project.
     ///
     /// Returns a structured list of files and directories with metadata.
-    #[tool(description = "List the directory structure of a project. Returns structured JSON list of files and directories with metadata including file types and languages.")]
+    #[tool(
+        description = "List the directory structure of a project. Returns structured JSON list of files and directories with metadata including file types and languages."
+    )]
     async fn list_directory_structure(
         &self,
         Parameters(request): Parameters<ListDirectoryRequest>,
@@ -914,46 +1130,60 @@ impl CortexServer {
                     "code": "invalid_path",
                     "message": format!("Directory not found: {}", request.path)
                 }
-            }).to_string();
+            })
+            .to_string();
         }
 
         let max_depth = Some(request.max_depth.unwrap_or(3));
         let extension_filter = request.extension.as_deref();
 
-        let (entries, root_name) = match walker::directory_tree_structured(path, max_depth, extension_filter) {
-            Ok(r) => r,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "io_error",
-                    "message": format!("Failed to list directory: {e}")
+        let (entries, root_name) =
+            match walker::directory_tree_structured(path, max_depth, extension_filter) {
+                Ok(r) => r,
+                Err(e) => {
+                    return serde_json::json!({
+                        "error": {
+                            "code": "io_error",
+                            "message": format!("Failed to list directory: {e}")
+                        }
+                    })
+                    .to_string()
                 }
-            }).to_string(),
-        };
+            };
 
-        let file_count = entries.iter().filter(|e| e.entry_type == crate::mcp_server::models::FileType::File).count();
-        let directory_count = entries.iter().filter(|e| e.entry_type == crate::mcp_server::models::FileType::Directory).count();
+        let file_count = entries
+            .iter()
+            .filter(|e| e.entry_type == crate::mcp_server::models::FileType::File)
+            .count();
+        let directory_count = entries
+            .iter()
+            .filter(|e| e.entry_type == crate::mcp_server::models::FileType::Directory)
+            .count();
 
         serde_json::to_string(&DirectoryListing {
             root: root_name,
             entries,
             file_count,
             directory_count,
-        }).unwrap_or_else(|e| serde_json::json!({
-            "error": {
-                "code": "serialization_error",
-                "message": format!("Failed to serialize listing: {e}")
-            }
-        }).to_string())
+        })
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize listing: {e}")
+                }
+            })
+            .to_string()
+        })
     }
 
     /// Index or re-index a project directory.
     ///
     /// Call this after code changes to refresh the symbol index before searching.
-    #[tool(description = "Index or re-index a project directory. Call this after code changes to refresh the symbol index before searching. Returns structured JSON with indexing statistics.")]
-    async fn index_project(
-        &self,
-        Parameters(request): Parameters<IndexProjectRequest>,
-    ) -> String {
+    #[tool(
+        description = "Index or re-index a project directory. Call this after code changes to refresh the symbol index before searching. Returns structured JSON with indexing statistics."
+    )]
+    async fn index_project(&self, Parameters(request): Parameters<IndexProjectRequest>) -> String {
         let path = Path::new(&request.path);
         if !path.exists() {
             return serde_json::json!({
@@ -961,32 +1191,40 @@ impl CortexServer {
                     "code": "invalid_path",
                     "message": format!("Directory not found: {}", request.path)
                 }
-            }).to_string();
+            })
+            .to_string();
         }
 
         let indexer = match Indexer::new(&self.config).await {
             Ok(i) => i,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "indexing_failed",
-                    "message": format!("Failed to create indexer: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "indexing_failed",
+                        "message": format!("Failed to create indexer: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
         let start = Instant::now();
         let stats = match indexer.index_project(path).await {
             Ok(s) => s,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "indexing_failed",
-                    "message": format!("Indexing failed: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "indexing_failed",
+                        "message": format!("Indexing failed: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
         let duration_ms = start.elapsed().as_millis() as u64;
 
-        let project_root = path.canonicalize()
+        let project_root = path
+            .canonicalize()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| request.path.clone());
 
@@ -997,22 +1235,29 @@ impl CortexServer {
             symbols_found: stats.symbols_found as u32,
             duration_ms,
             project_root,
-        }).unwrap_or_else(|e| serde_json::json!({
-            "error": {
-                "code": "serialization_error",
-                "message": format!("Failed to serialize index result: {e}")
-            }
-        }).to_string())
+        })
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize index result: {e}")
+                }
+            })
+            .to_string()
+        })
     }
 
     /// Check if a project is indexed and get its status.
-    #[tool(description = "Check if a project is indexed and get its status including file count, symbol count, and last indexed time. Returns structured JSON with project metadata.")]
+    #[tool(
+        description = "Check if a project is indexed and get its status including file count, symbol count, and last indexed time. Returns structured JSON with project metadata."
+    )]
     async fn get_index_status(
         &self,
         Parameters(request): Parameters<GetIndexStatusRequest>,
     ) -> String {
         let path = Path::new(&request.path);
-        let project_root = path.canonicalize()
+        let project_root = path
+            .canonicalize()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| request.path.clone());
 
@@ -1022,37 +1267,48 @@ impl CortexServer {
                     "code": "auto_index_failed",
                     "message": format!("Auto-indexing failed: {e}")
                 }
-            }).to_string();
+            })
+            .to_string();
         }
 
         let pool = match self.get_pool().await {
             Ok(p) => p,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Failed to connect to database: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to connect to database: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
-        let (file_count, symbol_count, last_indexed) = match db::get_project_stats(&pool, &project_root).await {
-            Ok(s) => s,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Failed to get project stats: {e}")
+        let (file_count, symbol_count, last_indexed) =
+            match db::get_project_stats(pool, &project_root).await {
+                Ok(s) => s,
+                Err(e) => {
+                    return serde_json::json!({
+                        "error": {
+                            "code": "database_error",
+                            "message": format!("Failed to get project stats: {e}")
+                        }
+                    })
+                    .to_string()
                 }
-            }).to_string(),
-        };
+            };
 
-        let languages = match db::get_project_languages(&pool, &project_root).await {
+        let languages = match db::get_project_languages(pool, &project_root).await {
             Ok(l) => l,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Failed to get project languages: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to get project languages: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
         let is_indexed = file_count > 0;
@@ -1064,20 +1320,269 @@ impl CortexServer {
             last_indexed_at: last_indexed,
             project_root,
             languages,
-        }).unwrap_or_else(|e| serde_json::json!({
-            "error": {
-                "code": "serialization_error",
-                "message": format!("Failed to serialize status: {e}")
+        })
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize status: {e}")
+                }
+            })
+            .to_string()
+        })
+    }
+
+    /// Export a task report to the .cortex/reports/ directory.
+    ///
+    /// Call this after completing a task to record what was done, issues found, and
+    /// improvement suggestions. Reports can later be synthesized with synthesize_reports.
+    #[tool(
+        description = "Export a task report after completing work. Saves a structured JSON report to the project's .cortex/reports/ directory. Reports can be synthesized later with synthesize_reports to identify patterns and improvement opportunities."
+    )]
+    async fn export_report(&self, Parameters(request): Parameters<ExportReportRequest>) -> String {
+        let path = Path::new(&request.project_root);
+        let project_root = match path.canonicalize() {
+            Ok(p) => p,
+            Err(_) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "invalid_path",
+                        "message": format!("Project root not found: {}", request.project_root)
+                    }
+                })
+                .to_string()
             }
-        }).to_string())
+        };
+
+        let valid_task_types = [
+            "bug_fix",
+            "feature",
+            "refactoring",
+            "exploration",
+            "review",
+            "other",
+        ];
+        let task_type = request.task_type.to_lowercase();
+        if !valid_task_types.contains(&task_type.as_str()) {
+            return serde_json::json!({
+                "error": {
+                    "code": "invalid_parameters",
+                    "message": format!("Invalid task_type '{}'. Must be one of: {}", request.task_type, valid_task_types.join(", "))
+                }
+            }).to_string();
+        }
+
+        if request.summary.trim().is_empty() {
+            return serde_json::json!({
+                "error": {
+                    "code": "invalid_parameters",
+                    "message": "Summary cannot be empty"
+                }
+            })
+            .to_string();
+        }
+
+        let report = crate::report::TaskReport {
+            id: String::new(),           // generated by save_report
+            timestamp: String::new(),    // generated by save_report
+            project_root: String::new(), // generated by save_report
+            task_type,
+            summary: request.summary,
+            tools_used: request.tools_used.unwrap_or_default(),
+            files_modified: request.files_modified.unwrap_or_default(),
+            issues_found: request.issues_found.unwrap_or_default(),
+            improvement_suggestions: request.improvement_suggestions.unwrap_or_default(),
+            metadata: request.metadata.unwrap_or_default(),
+        };
+
+        let file_path = match crate::report::save_report(&project_root, report) {
+            Ok(p) => p,
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "io_error",
+                        "message": format!("Failed to save report: {e}")
+                    }
+                })
+                .to_string()
+            }
+        };
+
+        // Read back to get the generated id and timestamp
+        let saved: crate::report::TaskReport = match std::fs::read_to_string(&file_path)
+            .ok()
+            .and_then(|c| serde_json::from_str(&c).ok())
+        {
+            Some(r) => r,
+            None => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "io_error",
+                        "message": "Failed to read back saved report"
+                    }
+                })
+                .to_string()
+            }
+        };
+
+        serde_json::to_string(&ExportReportResult {
+            report_id: saved.id,
+            file_path: file_path.to_string_lossy().to_string(),
+            project_root: saved.project_root,
+            timestamp: saved.timestamp,
+        })
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize result: {e}")
+                }
+            })
+            .to_string()
+        })
+    }
+
+    /// Synthesize past task reports to identify patterns and improvements.
+    ///
+    /// Reads all reports in .cortex/reports/ and returns aggregated insights including
+    /// recurring issues, improvement suggestions, frequently modified files, and tool usage.
+    #[tool(
+        description = "Synthesize past task reports to identify patterns, recurring issues, and improvement opportunities. Reads all reports from the project's .cortex/reports/ directory and returns aggregated insights."
+    )]
+    async fn synthesize_reports(
+        &self,
+        Parameters(request): Parameters<SynthesizeReportsRequest>,
+    ) -> String {
+        let path = Path::new(&request.project_root);
+        let project_root = match path.canonicalize() {
+            Ok(p) => p,
+            Err(_) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "invalid_path",
+                        "message": format!("Project root not found: {}", request.project_root)
+                    }
+                })
+                .to_string()
+            }
+        };
+
+        let limit = request.limit.unwrap_or(50);
+
+        let total_count = match crate::report::count_reports(&project_root) {
+            Ok(c) => c,
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "io_error",
+                        "message": format!("Failed to count reports: {e}")
+                    }
+                })
+                .to_string()
+            }
+        };
+
+        if total_count == 0 {
+            return serde_json::to_string(&SynthesizeReportsResult {
+                total_reports: 0,
+                reports_analyzed: 0,
+                date_range: None,
+                task_type_breakdown: HashMap::new(),
+                frequently_modified_files: Vec::new(),
+                recurring_issues: Vec::new(),
+                improvement_suggestions: Vec::new(),
+                tools_usage: Vec::new(),
+                summary: "No reports found for this project.".to_string(),
+            })
+            .unwrap_or_else(|_| "{}".to_string());
+        }
+
+        let reports = match crate::report::load_reports(&project_root, limit) {
+            Ok(r) => r,
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "io_error",
+                        "message": format!("Failed to load reports: {e}")
+                    }
+                })
+                .to_string()
+            }
+        };
+
+        let result = crate::report::synthesize(&reports, total_count);
+
+        // Convert internal types to MCP response types
+        let date_range = result
+            .date_range
+            .map(|dr| crate::mcp_server::models::DateRangeResult {
+                from: dr.from,
+                to: dr.to,
+            });
+
+        let frequently_modified_files: Vec<FileFrequencyResult> = result
+            .frequently_modified_files
+            .into_iter()
+            .map(|f| FileFrequencyResult {
+                file_path: f.file_path,
+                count: f.count,
+            })
+            .collect();
+
+        let recurring_issues: Vec<IssueFrequencyResult> = result
+            .recurring_issues
+            .into_iter()
+            .map(|i| IssueFrequencyResult {
+                issue: i.issue,
+                count: i.count,
+            })
+            .collect();
+
+        let improvement_suggestions: Vec<SuggestionFrequencyResult> = result
+            .improvement_suggestions
+            .into_iter()
+            .map(|s| SuggestionFrequencyResult {
+                suggestion: s.suggestion,
+                count: s.count,
+            })
+            .collect();
+
+        let tools_usage: Vec<ToolUsageResult> = result
+            .tools_usage
+            .into_iter()
+            .map(|t| ToolUsageResult {
+                tool: t.tool,
+                count: t.count,
+            })
+            .collect();
+
+        serde_json::to_string(&SynthesizeReportsResult {
+            total_reports: result.total_reports,
+            reports_analyzed: result.reports_analyzed,
+            date_range,
+            task_type_breakdown: result.task_type_breakdown,
+            frequently_modified_files,
+            recurring_issues,
+            improvement_suggestions,
+            tools_usage,
+            summary: result.summary,
+        })
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize result: {e}")
+                }
+            })
+            .to_string()
+        })
     }
 
     /// List files in a project with optional filtering.
-    #[tool(description = "List files in a project with optional filtering by extension. Returns structured JSON list of file entries with metadata.")]
-    async fn list_files(
-        &self,
-        Parameters(request): Parameters<ListFilesRequest>,
-    ) -> String {
+    #[tool(
+        description = "List files in a project with optional filtering by extension. Returns structured JSON list of file entries with metadata."
+    )]
+    async fn list_files(&self, Parameters(request): Parameters<ListFilesRequest>) -> String {
         let path = Path::new(&request.path);
         if !path.exists() {
             return serde_json::json!({
@@ -1085,38 +1590,44 @@ impl CortexServer {
                     "code": "invalid_path",
                     "message": format!("Directory not found: {}", request.path)
                 }
-            }).to_string();
+            })
+            .to_string();
         }
 
         let include_directories = request.include_directories.unwrap_or(false);
         let extension_filter = request.extension.as_deref();
         let limit = request.limit.unwrap_or(100);
 
-        let entries = match walker::list_files_structured(
-            path,
-            extension_filter,
-            include_directories,
-            limit,
-        ) {
-            Ok(e) => e,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "io_error",
-                    "message": format!("Failed to list files: {e}")
+        let entries =
+            match walker::list_files_structured(path, extension_filter, include_directories, limit)
+            {
+                Ok(e) => e,
+                Err(e) => {
+                    return serde_json::json!({
+                        "error": {
+                            "code": "io_error",
+                            "message": format!("Failed to list files: {e}")
+                        }
+                    })
+                    .to_string()
                 }
-            }).to_string(),
-        };
+            };
 
-        serde_json::to_string(&entries).unwrap_or_else(|e| serde_json::json!({
-            "error": {
-                "code": "serialization_error",
-                "message": format!("Failed to serialize files: {e}")
-            }
-        }).to_string())
+        serde_json::to_string(&entries).unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize files: {e}")
+                }
+            })
+            .to_string()
+        })
     }
 
     /// Get all available symbol kinds that can be used as filters.
-    #[tool(description = "Get all available symbol kinds (function, struct, class, etc.) that can be used as filters in search. Returns JSON array of symbol kinds.")]
+    #[tool(
+        description = "Get all available symbol kinds (function, struct, class, etc.) that can be used as filters in search. Returns JSON array of symbol kinds."
+    )]
     async fn list_symbol_kinds(&self) -> String {
         serde_json::to_string(&vec![
             crate::models::SymbolKind::Function,
@@ -1130,62 +1641,81 @@ impl CortexServer {
             crate::models::SymbolKind::Module,
             crate::models::SymbolKind::Class,
             crate::models::SymbolKind::Method,
-        ]).unwrap_or_else(|_| "[]".to_string())
+        ])
+        .unwrap_or_else(|_| "[]".to_string())
     }
 
     /// Get statistics about symbols in the index.
-    #[tool(description = "Get statistics about symbols in the index including total count and breakdown by kind and language. Returns structured JSON with symbol statistics.")]
+    #[tool(
+        description = "Get statistics about symbols in the index including total count and breakdown by kind and language. Returns structured JSON with symbol statistics."
+    )]
     async fn get_symbol_stats(&self) -> String {
         let pool = match self.get_pool().await {
             Ok(p) => p,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Failed to connect to database: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to connect to database: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
         let total_symbols = match db::get_total_symbol_count(&pool).await {
             Ok(c) => c,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Failed to get total symbol count: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to get total symbol count: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
         let by_kind = match db::get_symbols_by_kind(&pool).await {
             Ok(b) => b,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Failed to get symbols by kind: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to get symbols by kind: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
         let by_language = match db::get_symbols_by_language(&pool).await {
             Ok(b) => b,
-            Err(e) => return serde_json::json!({
-                "error": {
-                    "code": "database_error",
-                    "message": format!("Failed to get symbols by language: {e}")
-                }
-            }).to_string(),
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "database_error",
+                        "message": format!("Failed to get symbols by language: {e}")
+                    }
+                })
+                .to_string()
+            }
         };
 
         serde_json::to_string(&SymbolStats {
             total_symbols,
             by_kind,
             by_language,
-        }).unwrap_or_else(|e| serde_json::json!({
-            "error": {
-                "code": "serialization_error",
-                "message": format!("Failed to serialize stats: {e}")
-            }
-        }).to_string())
+        })
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize stats: {e}")
+                }
+            })
+            .to_string()
+        })
     }
 }
 
@@ -1201,7 +1731,10 @@ impl CortexServer {
         let code = lines.join("\n");
 
         // Preview with line numbers (first 10 lines)
-        let preview: Vec<String> = lines.iter().take(10).enumerate()
+        let preview: Vec<String> = lines
+            .iter()
+            .take(10)
+            .enumerate()
             .map(|(i, line)| format!("{:>4} | {}", ctx.start_line as usize + i, line))
             .collect();
         let preview = preview.join("\n");
@@ -1211,13 +1744,18 @@ impl CortexServer {
             let start_idx = (ctx.start_line as usize).saturating_sub(1);
             let end_idx = (ctx.end_line as usize).min(lines.len());
 
-            let before_lines: Vec<String> = lines.iter().take(start_idx)
+            let before_lines: Vec<String> = lines
+                .iter()
+                .take(start_idx)
                 .skip(start_idx.saturating_sub(context_lines))
                 .enumerate()
                 .map(|(i, line)| format!("{:>4} | {}", start_idx - context_lines + i + 1, line))
                 .collect();
 
-            let after_lines: Vec<String> = lines.iter().skip(end_idx).take(context_lines)
+            let after_lines: Vec<String> = lines
+                .iter()
+                .skip(end_idx)
+                .take(context_lines)
                 .enumerate()
                 .map(|(i, line)| format!("{:>4} | {}", end_idx + i + 1, line))
                 .collect();
@@ -1270,9 +1808,9 @@ fn build_symbol_hierarchy(mut entries: Vec<DocumentSymbolEntry>) -> Vec<Document
             let ce = entries[j].end_line;
             if cj >= start && ce <= end {
                 // Check if already claimed by a closer parent
-                let claimed = child_indices.iter().any(|&ci| {
-                    entries[ci].start_line <= cj && ce <= entries[ci].end_line
-                });
+                let claimed = child_indices
+                    .iter()
+                    .any(|&ci| entries[ci].start_line <= cj && ce <= entries[ci].end_line);
                 if !claimed {
                     child_indices.push(j);
                 }
@@ -1321,6 +1859,8 @@ Available tools:
 - find_references: Find all references to a symbol across the project (returns JSON)
 - search_by_semantic: Search symbols by concept using full-text search (returns JSON)
 - get_imports: Analyze import dependencies for a file (returns JSON)
+- export_report: Export a task report after completing work (saves to .cortex/reports/)
+- synthesize_reports: Synthesize past reports to identify patterns and improvements (returns JSON)
 
 Usage pattern:
 1. Use index_project to index your codebase (first time or after changes)
@@ -1333,6 +1873,8 @@ Usage pattern:
 8. Use search_content to grep for text patterns (TODOs, raw SQL, security patterns)
 9. Use list_directory_structure or list_files to explore project structure
 10. Use list_symbol_kinds to get available symbol type filters, get_symbol_stats for index statistics
+11. After completing a task, use export_report to save a report with findings and suggestions
+12. Use synthesize_reports to review past task reports and identify recurring patterns
 
 Note: All tools return structured JSON that can be parsed programmatically.
 "#,

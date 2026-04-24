@@ -15,9 +15,9 @@ impl Parser for JsParser {
             .set_language(&tree_sitter_javascript::LANGUAGE.into())
             .expect("Failed to set JavaScript language");
 
-        let tree = parser.parse(content, None).unwrap_or_else(|| {
-            panic!("Failed to parse file: {}", path.display())
-        });
+        let tree = parser
+            .parse(content, None)
+            .unwrap_or_else(|| panic!("Failed to parse file: {}", path.display()));
 
         let root = tree.root_node();
         let mut symbols = Vec::new();
@@ -28,11 +28,7 @@ impl Parser for JsParser {
     }
 }
 
-fn extract_js_symbols(
-    node: &tree_sitter::Node,
-    source: &str,
-    symbols: &mut Vec<Symbol>,
-) {
+fn extract_js_symbols(node: &tree_sitter::Node, source: &str, symbols: &mut Vec<Symbol>) {
     match node.kind() {
         "function_declaration" => {
             if let Some(sym) = extract_js_function(node, source, SymbolKind::Function) {
@@ -69,8 +65,7 @@ fn extract_js_symbols(
             for child in node.children(&mut cursor) {
                 match child.kind() {
                     "function_declaration" => {
-                        if let Some(sym) =
-                            extract_js_function(&child, source, SymbolKind::Function)
+                        if let Some(sym) = extract_js_function(&child, source, SymbolKind::Function)
                         {
                             symbols.push(sym);
                         }
@@ -95,11 +90,7 @@ fn extract_js_symbols(
     }
 }
 
-fn extract_js_function(
-    node: &tree_sitter::Node,
-    source: &str,
-    kind: SymbolKind,
-) -> Option<Symbol> {
+fn extract_js_function(node: &tree_sitter::Node, source: &str, kind: SymbolKind) -> Option<Symbol> {
     let name = node.child_by_field_name("name")?;
     let name_text = name.utf8_text(source.as_bytes()).ok()?;
 
@@ -197,7 +188,10 @@ fn extract_variable_declarations(
     }
 }
 
-fn find_child_by_kind<'a>(node: &'a tree_sitter::Node, kind: &str) -> Option<tree_sitter::Node<'a>> {
+fn find_child_by_kind<'a>(
+    node: &'a tree_sitter::Node,
+    kind: &str,
+) -> Option<tree_sitter::Node<'a>> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == kind {
@@ -257,15 +251,15 @@ fn clean_jsdoc(text: &str) -> String {
         .to_string()
 }
 
-fn extract_js_imports(
-    node: &tree_sitter::Node,
-    source: &str,
-    imports: &mut Vec<Import>,
-) {
+fn extract_js_imports(node: &tree_sitter::Node, source: &str, imports: &mut Vec<Import>) {
     match node.kind() {
         "import_statement" => {
             let line = node.start_position().row + 1;
-            let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("").to_string();
+            let raw = node
+                .utf8_text(source.as_bytes())
+                .ok()
+                .unwrap_or("")
+                .to_string();
             let mut from_path = None;
             let mut symbols_list = Vec::new();
             let mut cursor = node.walk();
@@ -315,7 +309,11 @@ fn extract_js_imports(
                 if let Some(name) = f.utf8_text(source.as_bytes()).ok() {
                     if name == "require" {
                         let line = node.start_position().row + 1;
-                        let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("").to_string();
+                        let raw = node
+                            .utf8_text(source.as_bytes())
+                            .ok()
+                            .unwrap_or("")
+                            .to_string();
                         let args = node.child_by_field_name("arguments");
                         let from_path = args.and_then(|a| {
                             a.children(&mut a.walk())
@@ -360,7 +358,9 @@ mod tests {
         let parser = JsParser;
         let result = parser.parse(code, &PathBuf::from("test.js"));
         let symbols = &result.symbols;
-        assert!(symbols.iter().any(|s| s.name == "greet" && s.kind == SymbolKind::Function));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "greet" && s.kind == SymbolKind::Function));
     }
 
     #[test]
@@ -369,9 +369,15 @@ mod tests {
         let parser = JsParser;
         let result = parser.parse(code, &PathBuf::from("test.js"));
         let symbols = &result.symbols;
-        assert!(symbols.iter().any(|s| s.name == "Animal" && s.kind == SymbolKind::Class));
-        assert!(symbols.iter().any(|s| s.name == "constructor" && s.kind == SymbolKind::Method));
-        assert!(symbols.iter().any(|s| s.name == "speak" && s.kind == SymbolKind::Method));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "Animal" && s.kind == SymbolKind::Class));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "constructor" && s.kind == SymbolKind::Method));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "speak" && s.kind == SymbolKind::Method));
     }
 
     #[test]
@@ -380,7 +386,9 @@ mod tests {
         let parser = JsParser;
         let result = parser.parse(code, &PathBuf::from("test.js"));
         let symbols = &result.symbols;
-        assert!(symbols.iter().any(|s| s.name == "add" && s.kind == SymbolKind::Function));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "add" && s.kind == SymbolKind::Function));
     }
 
     #[test]
@@ -389,8 +397,12 @@ mod tests {
         let parser = JsParser;
         let result = parser.parse(code, &PathBuf::from("test.js"));
         let symbols = &result.symbols;
-        assert!(symbols.iter().any(|s| s.name == "handler" && s.kind == SymbolKind::Function));
-        assert!(symbols.iter().any(|s| s.name == "Controller" && s.kind == SymbolKind::Class));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "handler" && s.kind == SymbolKind::Function));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "Controller" && s.kind == SymbolKind::Class));
     }
 
     #[test]
@@ -399,7 +411,10 @@ mod tests {
         let parser = JsParser;
         let result = parser.parse(code, &PathBuf::from("test.js"));
         let symbols = &result.symbols;
-        let class = symbols.iter().find(|s| s.kind == SymbolKind::Class).unwrap();
+        let class = symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::Class)
+            .unwrap();
         assert!(class.signature.as_ref().unwrap().contains("extends"));
     }
 }

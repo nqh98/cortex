@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum Language {
@@ -7,6 +7,7 @@ pub enum Language {
     Python,
     JavaScript,
     TypeScript,
+    Java,
 }
 
 impl Language {
@@ -16,6 +17,7 @@ impl Language {
             "py" => Some(Self::Python),
             "js" | "jsx" => Some(Self::JavaScript),
             "ts" | "tsx" => Some(Self::TypeScript),
+            "java" => Some(Self::Java),
             _ => None,
         }
     }
@@ -26,6 +28,7 @@ impl Language {
             Self::Python => "python",
             Self::JavaScript => "javascript",
             Self::TypeScript => "typescript",
+            Self::Java => "java",
         }
     }
 }

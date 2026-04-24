@@ -15,9 +15,9 @@ impl Parser for PythonParser {
             .set_language(&tree_sitter_python::LANGUAGE.into())
             .expect("Failed to set Python language");
 
-        let tree = parser.parse(content, None).unwrap_or_else(|| {
-            panic!("Failed to parse file: {}", path.display())
-        });
+        let tree = parser
+            .parse(content, None)
+            .unwrap_or_else(|| panic!("Failed to parse file: {}", path.display()));
 
         let root = tree.root_node();
         let mut symbols = Vec::new();
@@ -28,11 +28,7 @@ impl Parser for PythonParser {
     }
 }
 
-fn extract_python_symbols(
-    node: &tree_sitter::Node,
-    source: &str,
-    symbols: &mut Vec<Symbol>,
-) {
+fn extract_python_symbols(node: &tree_sitter::Node, source: &str, symbols: &mut Vec<Symbol>) {
     match node.kind() {
         "function_definition" => {
             if let Some(sym) = extract_python_function(node, source, SymbolKind::Function) {
@@ -150,18 +146,19 @@ fn extract_python_docstring(node: &tree_sitter::Node, source: &str) -> Option<St
     None
 }
 
-fn extract_python_imports(
-    node: &tree_sitter::Node,
-    source: &str,
-    imports: &mut Vec<Import>,
-) {
+fn extract_python_imports(node: &tree_sitter::Node, source: &str, imports: &mut Vec<Import>) {
     match node.kind() {
         "import_statement" => {
             let line = node.start_position().row + 1;
-            let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("").to_string();
+            let raw = node
+                .utf8_text(source.as_bytes())
+                .ok()
+                .unwrap_or("")
+                .to_string();
             // import X, Y, Z
             let mut cursor = node.walk();
-            let dotted_names: Vec<String> = node.children(&mut cursor)
+            let dotted_names: Vec<String> = node
+                .children(&mut cursor)
                 .filter(|c| c.kind() == "dotted_name" || c.kind() == "aliased_import")
                 .filter_map(|c| c.utf8_text(source.as_bytes()).ok())
                 .map(|s| s.to_string())
@@ -190,7 +187,11 @@ fn extract_python_imports(
         }
         "import_from_statement" => {
             let line = node.start_position().row + 1;
-            let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("").to_string();
+            let raw = node
+                .utf8_text(source.as_bytes())
+                .ok()
+                .unwrap_or("")
+                .to_string();
             // from X import Y, Z
             let mut cursor = node.walk();
             let children: Vec<_> = node.children(&mut cursor).collect();
@@ -202,7 +203,10 @@ fn extract_python_imports(
                 match child.kind() {
                     "dotted_name" | "relative_import" => {
                         if module_path.is_none() {
-                            module_path = child.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+                            module_path = child
+                                .utf8_text(source.as_bytes())
+                                .ok()
+                                .map(|s| s.to_string());
                         }
                     }
                     "identifier" => {
@@ -280,9 +284,15 @@ class Dog:
         let parser = PythonParser;
         let result = parser.parse(code, &PathBuf::from("test.py"));
         let symbols = &result.symbols;
-        assert!(symbols.iter().any(|s| s.name == "Dog" && s.kind == SymbolKind::Class));
-        assert!(symbols.iter().any(|s| s.name == "__init__" && s.kind == SymbolKind::Method));
-        assert!(symbols.iter().any(|s| s.name == "bark" && s.kind == SymbolKind::Method));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "Dog" && s.kind == SymbolKind::Class));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "__init__" && s.kind == SymbolKind::Method));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "bark" && s.kind == SymbolKind::Method));
     }
 
     #[test]
@@ -294,7 +304,10 @@ class Animal(Base):
         let parser = PythonParser;
         let result = parser.parse(code, &PathBuf::from("test.py"));
         let symbols = &result.symbols;
-        let class = symbols.iter().find(|s| s.kind == SymbolKind::Class).unwrap();
+        let class = symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::Class)
+            .unwrap();
         assert!(class.signature.as_ref().unwrap().contains("Base"));
     }
 

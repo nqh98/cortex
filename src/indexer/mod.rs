@@ -40,10 +40,20 @@ impl Indexer {
         let mut stats = IndexStats::default();
 
         for file_entry in &files {
-            let relative = file_entry.path.strip_prefix(project_path)
+            let relative = file_entry
+                .path
+                .strip_prefix(project_path)
                 .unwrap_or(&file_entry.path);
 
-            match self.index_file(&project_root, relative, &file_entry.path, file_entry.language).await {
+            match self
+                .index_file(
+                    &project_root,
+                    relative,
+                    &file_entry.path,
+                    file_entry.language,
+                )
+                .await
+            {
                 Ok(IndexFileResult::New(symbols)) => {
                     stats.files_indexed += 1;
                     stats.symbols_found += symbols;
@@ -73,10 +83,18 @@ impl Indexer {
         Ok(stats)
     }
 
-    pub async fn index_single_file(&self, project_path: &Path, path: &Path, language: Language) -> Result<usize> {
+    pub async fn index_single_file(
+        &self,
+        project_path: &Path,
+        path: &Path,
+        language: Language,
+    ) -> Result<usize> {
         let project_root = project_path.to_string_lossy().to_string();
         let relative = path.strip_prefix(project_path).unwrap_or(path);
-        match self.index_file(&project_root, relative, path, language).await? {
+        match self
+            .index_file(&project_root, relative, path, language)
+            .await?
+        {
             IndexFileResult::New(n) => Ok(n),
             IndexFileResult::Unchanged => Ok(0),
             IndexFileResult::Skipped => Ok(0),
@@ -116,7 +134,14 @@ impl Indexer {
         let symbol_count = result.symbols.len();
 
         // Store in database
-        let file_id = db::upsert_file(&self.pool, project_root, &path_str, &hash, language.as_str()).await?;
+        let file_id = db::upsert_file(
+            &self.pool,
+            project_root,
+            &path_str,
+            &hash,
+            language.as_str(),
+        )
+        .await?;
         db::insert_symbols(&self.pool, file_id, &result.symbols).await?;
         db::insert_imports(&self.pool, file_id, &result.imports).await?;
 

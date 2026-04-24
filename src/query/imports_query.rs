@@ -24,10 +24,7 @@ pub async fn get_imports(
         _ => {}
     }
 
-    Ok(ImportAnalysis {
-        outgoing,
-        incoming,
-    })
+    Ok(ImportAnalysis { outgoing, incoming })
 }
 
 pub struct ImportAnalysis {

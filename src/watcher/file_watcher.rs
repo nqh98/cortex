@@ -1,7 +1,9 @@
 use crate::config::Config;
 use crate::indexer::Indexer;
 use crate::models::Language;
-use notify::{Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{
+    Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
+};
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};

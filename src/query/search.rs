@@ -89,7 +89,7 @@ pub async fn count_symbols(
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*)
              FROM symbols s JOIN files f ON s.file_id = f.id
-             WHERE s.name LIKE ?1 AND s.kind = ?2"
+             WHERE s.name LIKE ?1 AND s.kind = ?2",
         )
         .bind(&pattern)
         .bind(kind)
@@ -99,7 +99,7 @@ pub async fn count_symbols(
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*)
              FROM symbols s JOIN files f ON s.file_id = f.id
-             WHERE s.name LIKE ?1"
+             WHERE s.name LIKE ?1",
         )
         .bind(&pattern)
         .fetch_one(pool)
@@ -109,16 +109,13 @@ pub async fn count_symbols(
     count.map_err(|e| crate::error::CortexError::Database(e.to_string()))
 }
 
-pub async fn search_by_kind(
-    pool: &DbPool,
-    kind: &str,
-) -> crate::error::Result<Vec<SymbolRow>> {
+pub async fn search_by_kind(pool: &DbPool, kind: &str) -> crate::error::Result<Vec<SymbolRow>> {
     sqlx::query_as::<_, SymbolRow>(
         "SELECT s.id, f.project_root, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature
          FROM symbols s JOIN files f ON s.file_id = f.id
          WHERE s.kind = ?1
          ORDER BY s.name
-         LIMIT 100"
+         LIMIT 100",
     )
     .bind(kind)
     .fetch_all(pool)

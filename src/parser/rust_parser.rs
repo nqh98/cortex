@@ -15,9 +15,9 @@ impl Parser for RustParser {
             .set_language(&tree_sitter_rust::LANGUAGE.into())
             .expect("Failed to set Rust language");
 
-        let tree = parser.parse(content, None).unwrap_or_else(|| {
-            panic!("Failed to parse file: {}", path.display())
-        });
+        let tree = parser
+            .parse(content, None)
+            .unwrap_or_else(|| panic!("Failed to parse file: {}", path.display()));
 
         let root = tree.root_node();
         let mut symbols = Vec::new();
@@ -28,11 +28,7 @@ impl Parser for RustParser {
     }
 }
 
-fn extract_symbols(
-    node: &tree_sitter::Node,
-    source: &str,
-    symbols: &mut Vec<Symbol>,
-) {
+fn extract_symbols(node: &tree_sitter::Node, source: &str, symbols: &mut Vec<Symbol>) {
     match node.kind() {
         "function_item" => {
             if let Some(sym) = extract_function(node, source) {
@@ -141,17 +137,16 @@ fn find_return_type(node: &tree_sitter::Node, source: &str) -> Option<String> {
             continue;
         }
         if found_arrow {
-            return child.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+            return child
+                .utf8_text(source.as_bytes())
+                .ok()
+                .map(|s| s.to_string());
         }
     }
     None
 }
 
-fn extract_type_ident(
-    node: &tree_sitter::Node,
-    source: &str,
-    kind: SymbolKind,
-) -> Option<Symbol> {
+fn extract_type_ident(node: &tree_sitter::Node, source: &str, kind: SymbolKind) -> Option<Symbol> {
     // struct_item, enum_item, trait_item use "name" field (type_identifier)
     let name = node.child_by_field_name("name")?;
     let name_text = name.utf8_text(source.as_bytes()).ok()?;
@@ -180,23 +175,32 @@ fn extract_impl(node: &tree_sitter::Node, source: &str) -> Option<Symbol> {
     for (i, child) in children.iter().enumerate() {
         match child.kind() {
             "type_identifier" | "generic_type" | "scoped_type_identifier" => {
-            if !found_for && i > 0 {
-                // First type_identifier after "impl" could be the trait
-                // Check if "for" keyword follows
-                if let Some(next) = children.get(i + 1) {
-                    if next.kind() == "for" {
-                        trait_name = child.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
-                        found_for = true;
-                        continue;
+                if !found_for && i > 0 {
+                    // First type_identifier after "impl" could be the trait
+                    // Check if "for" keyword follows
+                    if let Some(next) = children.get(i + 1) {
+                        if next.kind() == "for" {
+                            trait_name = child
+                                .utf8_text(source.as_bytes())
+                                .ok()
+                                .map(|s| s.to_string());
+                            found_for = true;
+                            continue;
+                        }
                     }
                 }
+                if found_for {
+                    type_name = child
+                        .utf8_text(source.as_bytes())
+                        .ok()
+                        .map(|s| s.to_string());
+                } else {
+                    type_name = child
+                        .utf8_text(source.as_bytes())
+                        .ok()
+                        .map(|s| s.to_string());
+                }
             }
-            if found_for {
-                type_name = child.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
-            } else {
-                type_name = child.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
-            }
-        }
             "for" => {
                 found_for = true;
             }
@@ -289,11 +293,7 @@ fn extract_doc_comments(node: &tree_sitter::Node, source: &str) -> Option<String
     Some(comments.join("\n"))
 }
 
-fn extract_imports(
-    node: &tree_sitter::Node,
-    source: &str,
-    imports: &mut Vec<Import>,
-) {
+fn extract_imports(node: &tree_sitter::Node, source: &str, imports: &mut Vec<Import>) {
     if node.kind() == "use_declaration" {
         let line = node.start_position().row + 1;
         let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("");
@@ -395,10 +395,17 @@ mod tests {
         let parser = RustParser;
         let result = parser.parse(code, &PathBuf::from("test.rs"));
         let symbols = &result.symbols;
-        assert!(symbols.len() >= 3, "Expected >= 3 symbols, got {}", symbols.len());
+        assert!(
+            symbols.len() >= 3,
+            "Expected >= 3 symbols, got {}",
+            symbols.len()
+        );
         let impl_sym = symbols.iter().find(|s| s.kind == SymbolKind::Impl).unwrap();
         assert_eq!(impl_sym.name, "User");
-        let methods: Vec<_> = symbols.iter().filter(|s| s.kind == SymbolKind::Method).collect();
+        let methods: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Method)
+            .collect();
         assert_eq!(methods.len(), 2);
     }
 
@@ -408,7 +415,9 @@ mod tests {
         let parser = RustParser;
         let result = parser.parse(code, &PathBuf::from("test.rs"));
         let symbols = &result.symbols;
-        assert!(symbols.iter().any(|s| s.name == "Drawable" && s.kind == SymbolKind::Trait));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "Drawable" && s.kind == SymbolKind::Trait));
     }
 
     #[test]
@@ -417,7 +426,9 @@ mod tests {
         let parser = RustParser;
         let result = parser.parse(code, &PathBuf::from("test.rs"));
         let symbols = &result.symbols;
-        assert!(symbols.iter().any(|s| s.name == "MAX_SIZE" && s.kind == SymbolKind::Constant));
+        assert!(symbols
+            .iter()
+            .any(|s| s.name == "MAX_SIZE" && s.kind == SymbolKind::Constant));
     }
 
     #[test]
@@ -439,12 +450,40 @@ mod tests {
         let result = parser.parse(code, &PathBuf::from("test.rs"));
         let symbols = &result.symbols;
         let kinds: Vec<_> = symbols.iter().map(|s| s.kind).collect();
-        assert!(kinds.contains(&SymbolKind::Module), "Missing Module in {:?}", kinds);
-        assert!(kinds.contains(&SymbolKind::Constant), "Missing Constant in {:?}", kinds);
-        assert!(kinds.contains(&SymbolKind::Struct), "Missing Struct in {:?}", kinds);
-        assert!(kinds.contains(&SymbolKind::Impl), "Missing Impl in {:?}", kinds);
-        assert!(kinds.contains(&SymbolKind::Method), "Missing Method in {:?}", kinds);
-        assert!(kinds.contains(&SymbolKind::Function), "Missing Function in {:?}", kinds);
-        assert!(kinds.contains(&SymbolKind::Enum), "Missing Enum in {:?}", kinds);
+        assert!(
+            kinds.contains(&SymbolKind::Module),
+            "Missing Module in {:?}",
+            kinds
+        );
+        assert!(
+            kinds.contains(&SymbolKind::Constant),
+            "Missing Constant in {:?}",
+            kinds
+        );
+        assert!(
+            kinds.contains(&SymbolKind::Struct),
+            "Missing Struct in {:?}",
+            kinds
+        );
+        assert!(
+            kinds.contains(&SymbolKind::Impl),
+            "Missing Impl in {:?}",
+            kinds
+        );
+        assert!(
+            kinds.contains(&SymbolKind::Method),
+            "Missing Method in {:?}",
+            kinds
+        );
+        assert!(
+            kinds.contains(&SymbolKind::Function),
+            "Missing Function in {:?}",
+            kinds
+        );
+        assert!(
+            kinds.contains(&SymbolKind::Enum),
+            "Missing Enum in {:?}",
+            kinds
+        );
     }
 }

@@ -14,7 +14,10 @@ pub async fn get_code_context(
     let symbol = if let Some(fp) = file_path {
         let canonical = Path::new(fp).canonicalize().ok();
         let canonical_str = canonical.as_deref().and_then(|p| p.to_str());
-        let filename = Path::new(fp).file_name().and_then(|n| n.to_str()).unwrap_or(fp);
+        let filename = Path::new(fp)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(fp);
 
         // Rank: exact > ends_with > absolute match > filename
         symbols.sort_by(|a, b| {
@@ -23,12 +26,9 @@ pub async fn get_code_context(
                     4
                 } else if s.path.ends_with(fp) {
                     3
-                } else if canonical_str.map_or(false, |c| s.absolute_path() == c) {
+                } else if canonical_str.is_some_and(|c| s.absolute_path() == c) {
                     2
-                } else if Path::new(&s.path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    == Some(filename)
+                } else if Path::new(&s.path).file_name().and_then(|n| n.to_str()) == Some(filename)
                 {
                     1
                 } else {
@@ -44,11 +44,8 @@ pub async fn get_code_context(
             .filter(|s| {
                 s.path == fp
                     || s.path.ends_with(fp)
-                    || canonical_str.map_or(false, |c| s.absolute_path() == c)
-                    || Path::new(&s.path)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        == Some(filename)
+                    || canonical_str.is_some_and(|c| s.absolute_path() == c)
+                    || Path::new(&s.path).file_name().and_then(|n| n.to_str()) == Some(filename)
             })
             .collect();
 

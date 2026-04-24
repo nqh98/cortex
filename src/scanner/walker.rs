@@ -46,10 +46,7 @@ pub fn walk_directory(root: &Path) -> crate::error::Result<Vec<WalkResult>> {
 
     for entry in walker {
         let entry = entry.map_err(|e| {
-            crate::error::CortexError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
+            crate::error::CortexError::Io(std::io::Error::other(e.to_string()))
         })?;
 
         if !entry.file_type().map_or(false, |ft| ft.is_file()) {
@@ -57,10 +54,7 @@ pub fn walk_directory(root: &Path) -> crate::error::Result<Vec<WalkResult>> {
         }
 
         let path = entry.into_path();
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         if let Some(language) = Language::from_extension(ext) {
             results.push(WalkResult { path, language });
@@ -76,10 +70,7 @@ pub fn directory_tree_structured(
     max_depth: Option<usize>,
     extension_filter: Option<&str>,
 ) -> crate::error::Result<(Vec<FileEntry>, String)> {
-    let root_name = root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(".");
+    let root_name = root.file_name().and_then(|n| n.to_str()).unwrap_or(".");
 
     let walker = build_walker(root).build();
     let max_depth = max_depth.unwrap_or(3);
@@ -88,10 +79,7 @@ pub fn directory_tree_structured(
 
     for entry in walker {
         let entry = entry.map_err(|e| {
-            crate::error::CortexError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
+            crate::error::CortexError::Io(std::io::Error::other(e.to_string()))
         })?;
 
         let depth = entry.depth();
@@ -109,10 +97,7 @@ pub fn directory_tree_structured(
         // Filter by extension if specified (only for files)
         if let Some(ext) = extension_filter {
             if entry.file_type().map_or(false, |ft| ft.is_file()) {
-                let file_ext = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("");
+                let file_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                 if file_ext != ext {
                     continue;
                 }
@@ -150,9 +135,7 @@ pub fn directory_tree_structured(
         };
 
         let size = if entry_type == FileType::File {
-            path.metadata()
-                .ok()
-                .map(|m| m.len())
+            path.metadata().ok().map(|m| m.len())
         } else {
             None
         };
@@ -191,10 +174,7 @@ pub fn list_files_structured(
         }
 
         let entry = entry.map_err(|e| {
-            crate::error::CortexError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
+            crate::error::CortexError::Io(std::io::Error::other(e.to_string()))
         })?;
 
         // Skip the root directory itself
@@ -261,9 +241,7 @@ pub fn list_files_structured(
         };
 
         let size = if entry_type == FileType::File {
-            path.metadata()
-                .ok()
-                .map(|m| m.len())
+            path.metadata().ok().map(|m| m.len())
         } else {
             None
         };
@@ -288,10 +266,7 @@ pub fn list_files_structured(
 /// ASCII tree representation (for CLI use, not MCP)
 pub fn directory_tree(root: &Path, max_depth: Option<usize>) -> crate::error::Result<String> {
     let mut lines = Vec::new();
-    let root_name = root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(".");
+    let root_name = root.file_name().and_then(|n| n.to_str()).unwrap_or(".");
     lines.push(root_name.to_string());
 
     let walker = build_walker(root).build();
@@ -312,8 +287,7 @@ pub fn directory_tree(root: &Path, max_depth: Option<usize>) -> crate::error::Re
             }
         }
 
-        let is_last = i == total - 1
-            || entries[i + 1..].iter().all(|e| e.depth() > depth);
+        let is_last = i == total - 1 || entries[i + 1..].iter().all(|e| e.depth() > depth);
 
         let prefix = if depth > 0 {
             let connector = if is_last { "└── " } else { "├── " };
@@ -323,10 +297,7 @@ pub fn directory_tree(root: &Path, max_depth: Option<usize>) -> crate::error::Re
             String::new()
         };
 
-        let name = entry
-            .file_name()
-            .to_string_lossy()
-            .to_string();
+        let name = entry.file_name().to_string_lossy().to_string();
 
         let suffix = if entry.file_type().map_or(false, |ft| ft.is_dir()) {
             "/".to_string()

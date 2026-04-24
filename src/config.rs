@@ -48,10 +48,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             database: DatabaseConfig {
-                path: cortex_dir()
-                    .join("db.sqlite")
-                    .to_string_lossy()
-                    .to_string(),
+                path: cortex_dir().join("db.sqlite").to_string_lossy().to_string(),
             },
             indexing: IndexingConfig {
                 max_file_size_kb: 1024,
@@ -69,9 +66,7 @@ impl Default for Config {
                 model: "AllMiniLML6V2".to_string(),
                 batch_size: 32,
             },
-            watcher: WatcherConfig {
-                debounce_ms: 500,
-            },
+            watcher: WatcherConfig { debounce_ms: 500 },
         }
     }
 }

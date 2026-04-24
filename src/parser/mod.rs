@@ -1,3 +1,4 @@
+pub mod java_parser;
 pub mod js_parser;
 pub mod python_parser;
 pub mod rust_parser;
@@ -22,5 +23,6 @@ pub fn get_parser(language: Language) -> Box<dyn Parser> {
         Language::Python => Box::new(python_parser::PythonParser),
         Language::JavaScript => Box::new(js_parser::JsParser),
         Language::TypeScript => Box::new(ts_parser::TsParser),
+        Language::Java => Box::new(java_parser::JavaParser),
     }
 }

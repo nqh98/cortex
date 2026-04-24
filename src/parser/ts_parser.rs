@@ -15,9 +15,9 @@ impl Parser for TsParser {
             .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())
             .expect("Failed to set TypeScript/TSX language");
 
-        let tree = parser.parse(content, None).unwrap_or_else(|| {
-            panic!("Failed to parse file: {}", path.display())
-        });
+        let tree = parser
+            .parse(content, None)
+            .unwrap_or_else(|| panic!("Failed to parse file: {}", path.display()));
 
         let root = tree.root_node();
         let mut symbols = Vec::new();
@@ -28,14 +28,11 @@ impl Parser for TsParser {
     }
 }
 
-fn extract_ts_symbols(
-    node: &tree_sitter::Node,
-    source: &str,
-    symbols: &mut Vec<Symbol>,
-) {
+fn extract_ts_symbols(node: &tree_sitter::Node, source: &str, symbols: &mut Vec<Symbol>) {
     match node.kind() {
         "function_declaration" | "generator_function_declaration" => {
-            if let Some(sym) = extract_named_symbol(node, source, SymbolKind::Function, "function") {
+            if let Some(sym) = extract_named_symbol(node, source, SymbolKind::Function, "function")
+            {
                 symbols.push(sym);
             }
             return;
@@ -48,7 +45,9 @@ fn extract_ts_symbols(
             return;
         }
         "interface_declaration" => {
-            if let Some(sym) = extract_named_symbol(node, source, SymbolKind::Interface, "interface") {
+            if let Some(sym) =
+                extract_named_symbol(node, source, SymbolKind::Interface, "interface")
+            {
                 symbols.push(sym);
             }
             return;
@@ -90,10 +89,12 @@ fn extract_ts_symbols(
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 match child.kind() {
-                    "function_declaration" | "class_declaration" | "interface_declaration"
-                    | "type_alias_declaration" | "enum_declaration" | "module" => {
-                        extract_ts_symbols(&child, source, symbols)
-                    }
+                    "function_declaration"
+                    | "class_declaration"
+                    | "interface_declaration"
+                    | "type_alias_declaration"
+                    | "enum_declaration"
+                    | "module" => extract_ts_symbols(&child, source, symbols),
                     _ => {}
                 }
             }
@@ -142,7 +143,8 @@ fn extract_class(node: &tree_sitter::Node, source: &str) -> Option<Symbol> {
 
     // Look for extends/implements clauses
     let mut cursor = node.walk();
-    let heritage: Vec<String> = node.children(&mut cursor)
+    let heritage: Vec<String> = node
+        .children(&mut cursor)
         .filter(|c| c.kind() == "class_heritage")
         .filter_map(|h| h.utf8_text(source.as_bytes()).ok())
         .map(|s| s.to_string())
@@ -166,11 +168,7 @@ fn extract_class(node: &tree_sitter::Node, source: &str) -> Option<Symbol> {
     })
 }
 
-fn extract_methods(
-    class_node: &tree_sitter::Node,
-    source: &str,
-    symbols: &mut Vec<Symbol>,
-) {
+fn extract_methods(class_node: &tree_sitter::Node, source: &str, symbols: &mut Vec<Symbol>) {
     let mut cursor = class_node.walk();
     for child in class_node.children(&mut cursor) {
         if child.kind() == "class_body" || child.kind() == "object_type" {
@@ -195,7 +193,8 @@ fn extract_methods(
 }
 
 fn extract_method_symbol(node: &tree_sitter::Node, source: &str) -> Option<Symbol> {
-    let name = node.child_by_field_name("name")
+    let name = node
+        .child_by_field_name("name")
         .or_else(|| find_child_by_kind(node, "property_identifier"))
         .or_else(|| find_child_by_kind(node, "identifier"))?;
     let name_text = name.utf8_text(source.as_bytes()).ok()?;
@@ -243,7 +242,10 @@ fn extract_variable_declarations(
     }
 }
 
-fn find_child_by_kind<'a>(node: &'a tree_sitter::Node, kind: &str) -> Option<tree_sitter::Node<'a>> {
+fn find_child_by_kind<'a>(
+    node: &'a tree_sitter::Node,
+    kind: &str,
+) -> Option<tree_sitter::Node<'a>> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == kind {
@@ -314,15 +316,15 @@ fn clean_jsdoc(text: &str) -> String {
         .to_string()
 }
 
-fn extract_ts_imports(
-    node: &tree_sitter::Node,
-    source: &str,
-    imports: &mut Vec<Import>,
-) {
+fn extract_ts_imports(node: &tree_sitter::Node, source: &str, imports: &mut Vec<Import>) {
     match node.kind() {
         "import_statement" => {
             let line = node.start_position().row + 1;
-            let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("").to_string();
+            let raw = node
+                .utf8_text(source.as_bytes())
+                .ok()
+                .unwrap_or("")
+                .to_string();
 
             // Find the source path (string literal)
             let mut from_path = None;
@@ -332,7 +334,10 @@ fn extract_ts_imports(
                 match child.kind() {
                     "string" | "template_string" => {
                         let text = child.utf8_text(source.as_bytes()).ok().unwrap_or("");
-                        from_path = Some(text.trim_matches(|c| c == '\'' || c == '"' || c == '`').to_string());
+                        from_path = Some(
+                            text.trim_matches(|c| c == '\'' || c == '"' || c == '`')
+                                .to_string(),
+                        );
                     }
                     "named_imports" => {
                         let mut ic = child.walk();
@@ -384,7 +389,11 @@ fn extract_ts_imports(
                 if let Some(name) = f.utf8_text(source.as_bytes()).ok() {
                     if name == "require" {
                         let line = node.start_position().row + 1;
-                        let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("").to_string();
+                        let raw = node
+                            .utf8_text(source.as_bytes())
+                            .ok()
+                            .unwrap_or("")
+                            .to_string();
                         let args = node.child_by_field_name("arguments");
                         let from_path = args.and_then(|a| {
                             a.children(&mut a.walk())

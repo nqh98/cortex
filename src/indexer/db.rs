@@ -34,18 +34,24 @@ async fn run_migrations(pool: &DbPool) -> crate::error::Result<()> {
 
     // Migrate old schema: add project_root column if missing
     let has_project_root: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM pragma_table_info('files') WHERE name = 'project_root'"
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('files') WHERE name = 'project_root'",
     )
     .fetch_one(pool)
     .await
     .unwrap_or(false);
 
     if !has_project_root {
-        sqlx::raw_sql("DROP TABLE IF EXISTS symbols").execute(pool).await
+        sqlx::raw_sql("DROP TABLE IF EXISTS symbols")
+            .execute(pool)
+            .await
             .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
-        sqlx::raw_sql("DROP TABLE IF EXISTS files").execute(pool).await
+        sqlx::raw_sql("DROP TABLE IF EXISTS files")
+            .execute(pool)
+            .await
             .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
-        sqlx::raw_sql(schema).execute(pool).await
+        sqlx::raw_sql(schema)
+            .execute(pool)
+            .await
             .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
     }
 
@@ -61,7 +67,7 @@ async fn run_migrations(pool: &DbPool) -> crate::error::Result<()> {
 
     // Migrate: add name_tokens column if missing
     let has_name_tokens: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM pragma_table_info('symbols') WHERE name = 'name_tokens'"
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('symbols') WHERE name = 'name_tokens'",
     )
     .fetch_one(pool)
     .await
@@ -74,12 +80,10 @@ async fn run_migrations(pool: &DbPool) -> crate::error::Result<()> {
             .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
 
         // Populate name_tokens for existing symbols
-        sqlx::raw_sql(
-            "UPDATE symbols SET name_tokens = name WHERE name_tokens IS NULL"
-        )
-        .execute(pool)
-        .await
-        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+        sqlx::raw_sql("UPDATE symbols SET name_tokens = name WHERE name_tokens IS NULL")
+            .execute(pool)
+            .await
+            .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
     }
 
     // FTS5 full-text search index
@@ -190,15 +194,8 @@ pub fn split_identifier(name: &str) -> String {
                 start = i - 1;
             }
         }
-        // Split at underscore
-        else if curr == b'_' {
-            if start < i {
-                tokens.push(&name[start..i]);
-            }
-            start = i + 1;
-        }
-        // Split at dot (for file paths or qualified names)
-        else if curr == b'.' {
+        // Split at underscore or dot
+        else if curr == b'_' || curr == b'.' {
             if start < i {
                 tokens.push(&name[start..i]);
             }
@@ -212,17 +209,14 @@ pub fn split_identifier(name: &str) -> String {
     tokens.join(" ").to_lowercase()
 }
 
-pub async fn search_symbols(
-    pool: &DbPool,
-    query: &str,
-) -> crate::error::Result<Vec<SymbolRow>> {
+pub async fn search_symbols(pool: &DbPool, query: &str) -> crate::error::Result<Vec<SymbolRow>> {
     let pattern = format!("%{query}%");
     let rows = sqlx::query_as::<_, SymbolRow>(
         "SELECT s.id, f.project_root, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature
          FROM symbols s JOIN files f ON s.file_id = f.id
          WHERE s.name LIKE ?1
          ORDER BY s.name
-         LIMIT 50"
+         LIMIT 50",
     )
     .bind(&pattern)
     .fetch_all(pool)
@@ -253,9 +247,13 @@ impl SymbolRow {
     }
 }
 
-pub async fn get_file_hash(pool: &DbPool, project_root: &str, path: &str) -> crate::error::Result<Option<String>> {
+pub async fn get_file_hash(
+    pool: &DbPool,
+    project_root: &str,
+    path: &str,
+) -> crate::error::Result<Option<String>> {
     let result = sqlx::query_as::<_, (String,)>(
-        "SELECT hash FROM files WHERE project_root = ? AND path = ?"
+        "SELECT hash FROM files WHERE project_root = ? AND path = ?",
     )
     .bind(project_root)
     .bind(path)
@@ -267,21 +265,21 @@ pub async fn get_file_hash(pool: &DbPool, project_root: &str, path: &str) -> cra
 }
 
 pub async fn delete_project(pool: &DbPool, project_root: &str) -> crate::error::Result<u64> {
-    let file_ids: Vec<(i64,)> = sqlx::query_as(
-        "SELECT id FROM files WHERE project_root = ?"
-    )
-    .bind(project_root)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+    let file_ids: Vec<(i64,)> = sqlx::query_as("SELECT id FROM files WHERE project_root = ?")
+        .bind(project_root)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
 
     let count = file_ids.len();
 
-    sqlx::query("DELETE FROM symbols WHERE file_id IN (SELECT id FROM files WHERE project_root = ?)")
-        .bind(project_root)
-        .execute(pool)
-        .await
-        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+    sqlx::query(
+        "DELETE FROM symbols WHERE file_id IN (SELECT id FROM files WHERE project_root = ?)",
+    )
+    .bind(project_root)
+    .execute(pool)
+    .await
+    .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
 
     sqlx::query("DELETE FROM files WHERE project_root = ?")
         .bind(project_root)
@@ -329,13 +327,12 @@ pub async fn get_project_stats(
     .await
     .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
 
-    let last_indexed: Option<(String,)> = sqlx::query_as(
-        "SELECT MAX(last_indexed) FROM files WHERE project_root = ?",
-    )
-    .bind(project_root)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+    let last_indexed: Option<(String,)> =
+        sqlx::query_as("SELECT MAX(last_indexed) FROM files WHERE project_root = ?")
+            .bind(project_root)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
 
     Ok((
         file_count.0 as u32,
@@ -407,12 +404,14 @@ pub async fn list_all_projects(pool: &DbPool) -> crate::error::Result<Vec<Projec
 
     Ok(rows
         .into_iter()
-        .map(|(project_root, file_count, symbol_count, last_indexed)| ProjectInfo {
-            project_root,
-            file_count: file_count as u32,
-            symbol_count: symbol_count as u32,
-            last_indexed,
-        })
+        .map(
+            |(project_root, file_count, symbol_count, last_indexed)| ProjectInfo {
+                project_root,
+                file_count: file_count as u32,
+                symbol_count: symbol_count as u32,
+                last_indexed,
+            },
+        )
         .collect())
 }
 

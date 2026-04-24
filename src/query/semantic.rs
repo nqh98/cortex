@@ -8,10 +8,7 @@ pub async fn search_by_semantic(
     limit: usize,
 ) -> Result<Vec<SymbolRow>> {
     // Tokenize: split on whitespace, lowercase
-    let tokens: Vec<&str> = query
-        .split_whitespace()
-        .filter(|t| !t.is_empty())
-        .collect();
+    let tokens: Vec<&str> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
     if tokens.is_empty() {
         return Ok(Vec::new());
     }
@@ -44,15 +41,8 @@ pub async fn search_by_semantic(
     Ok(rows)
 }
 
-pub async fn count_semantic_results(
-    pool: &DbPool,
-    query: &str,
-    project_root: &str,
-) -> Result<i64> {
-    let tokens: Vec<&str> = query
-        .split_whitespace()
-        .filter(|t| !t.is_empty())
-        .collect();
+pub async fn count_semantic_results(pool: &DbPool, query: &str, project_root: &str) -> Result<i64> {
+    let tokens: Vec<&str> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
     if tokens.is_empty() {
         return Ok(0);
     }

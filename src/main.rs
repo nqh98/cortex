@@ -1,7 +1,7 @@
 use clap::Parser;
 use cortex::config::Config;
-use cortex::indexer::Indexer;
 use cortex::indexer::db;
+use cortex::indexer::Indexer;
 use cortex::query::{context, search};
 use std::path::Path;
 
@@ -101,10 +101,7 @@ async fn run(cli: Cli) -> cortex::error::Result<()> {
 
             println!(
                 "Indexed {} files ({} symbols, {} unchanged, {} failed)",
-                stats.files_indexed,
-                stats.symbols_found,
-                stats.files_unchanged,
-                stats.files_failed,
+                stats.files_indexed, stats.symbols_found, stats.files_unchanged, stats.files_failed,
             );
         }
         Commands::Search { query, kind } => {
@@ -127,7 +124,10 @@ async fn run(cli: Cli) -> cortex::error::Result<()> {
             let pool = db::init_pool(&format!("sqlite:{}", config.database.path)).await?;
             let ctx = context::get_code_context(&pool, file.as_deref(), &symbol).await?;
             println!("--- {} ({}) ---", ctx.symbol_name, ctx.kind);
-            println!("File: {} lines {}-{}", ctx.file_path, ctx.start_line, ctx.end_line);
+            println!(
+                "File: {} lines {}-{}",
+                ctx.file_path, ctx.start_line, ctx.end_line
+            );
             if let Some(sig) = &ctx.signature {
                 println!("Signature: {sig}");
             }
@@ -188,7 +188,10 @@ async fn run(cli: Cli) -> cortex::error::Result<()> {
             for p in &projects {
                 let last = p.last_indexed.as_deref().unwrap_or("never");
                 println!("  {}", p.project_root);
-                println!("    Files: {}  Symbols: {}  Last indexed: {}", p.file_count, p.symbol_count, last);
+                println!(
+                    "    Files: {}  Symbols: {}  Last indexed: {}",
+                    p.file_count, p.symbol_count, last
+                );
             }
 
             println!("\nDatabase size: {}", format_size(db_size));
@@ -199,10 +202,15 @@ async fn run(cli: Cli) -> cortex::error::Result<()> {
             if name == "all" {
                 let projects = db::list_all_projects(&pool).await?;
                 let count = db::delete_all(&pool).await?;
-                println!("Cleaned all indexes ({} projects, {} files removed)", projects.len(), count);
+                println!(
+                    "Cleaned all indexes ({} projects, {} files removed)",
+                    projects.len(),
+                    count
+                );
             } else {
                 let projects = db::list_all_projects(&pool).await?;
-                let matches: Vec<_> = projects.iter()
+                let matches: Vec<_> = projects
+                    .iter()
                     .filter(|p| p.project_root.contains(&name))
                     .collect();
 
@@ -213,7 +221,10 @@ async fn run(cli: Cli) -> cortex::error::Result<()> {
 
                 for p in &matches {
                     let count = db::delete_project(&pool, &p.project_root).await?;
-                    println!("Cleaned index for {} ({} files removed)", p.project_root, count);
+                    println!(
+                        "Cleaned index for {} ({} files removed)",
+                        p.project_root, count
+                    );
                 }
 
                 if matches.len() > 1 {
