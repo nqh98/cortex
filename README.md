@@ -1,22 +1,20 @@
 # Cortex
 
-[![Version](https://img.shields.io/badge/version-0.2.0-blue)](https://github.com/your-org/cortex)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+A code context engine that indexes source code and exposes it to AI assistants via [MCP](https://modelcontextprotocol.io/).
 
-A local-first code context engine that indexes your source code, extracts semantic structures (functions, classes, structs), and exposes them to LLMs via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
-
-**Privacy-first.** All indexing and queries happen on your machine. No code is sent to any external service.
-
-**AI-Friendly.** All MCP tools return structured JSON for reliable programmatic access by AI agents.
+Cortex parses source files with Tree-sitter, stores symbols in SQLite, and serves 13 query tools over stdio JSON-RPC. All indexing and queries run locally.
 
 ## Features
 
-- **Multi-language parsing** — Extracts symbols from Rust, Python, and JavaScript/TypeScript using Tree-sitter
-- **Fast search** — SQLite-backed fuzzy search across all indexed symbols with sub-10ms queries
-- **Code context** — Retrieve the full source code of any symbol with line numbers
-- **MCP server** — Exposes tools directly to Claude and other MCP-compatible LLMs via stdio
-- **File watching** — Incremental re-indexing on save (only changed files are re-parsed)
-- **Directory tree** — Project structure overview for LLM context
+- **13 MCP tools** — symbol search, code retrieval, content grep, reference finding, import analysis, full-text search, and more
+- **Multi-language** — Rust, Python, JavaScript, TypeScript (including TSX/JSX)
+- **Auto-reindex** — detects stale indexes and re-indexes automatically before queries
+- **11 symbol kinds** — functions, structs, classes, interfaces, type aliases, enums, traits, impls, constants, modules, methods
+- **Import tracking** — stores import statements per file, supports outgoing/incoming dependency queries
+- **Full-text search** — FTS5 with BM25 ranking across symbol names, signatures, and documentation
+- **Reference finding** — finds all usages of a symbol across the project with classification (import, call, type usage)
+- **Content search** — regex grep across indexed files with context lines
+- **Document symbols** — lists all symbols in a file with parent-child hierarchy
 
 ## Installation
 
@@ -26,66 +24,18 @@ cd cortex
 ./install.sh
 ```
 
-This will:
-1. Build the binary with `cargo build --release`
-2. Install `cortex` to `~/.local/bin`
-3. Create `~/.cortex/` for config and data
-4. Auto-detect your Claude config and register Cortex as an MCP server
+This builds the binary, installs to `~/.local/bin`, and registers with Claude's MCP config.
 
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) (latest stable)
 - `jq` (for MCP config setup)
-- For embedding/vector search features: `pkg-config` and `libssl-dev` (`openssl-devel` on Fedora)
 
 ## Quick Start
 
-### 1. Index a project
+### 1. Connect to Claude via MCP
 
-```bash
-cortex index ./my-project
-```
-
-```
-Indexed 30 files (709 symbols, 0 unchanged, 0 failed)
-```
-
-### 2. Search for symbols
-
-```bash
-cortex search "handler"
-cortex search "Parser" --kind struct
-```
-
-```
-struct RustParser (src/parser/rust_parser.rs:5-5)
-struct PythonParser (src/parser/python_parser.rs:5-5)
-struct JsParser (src/parser/js_parser.rs:5-5)
-```
-
-### 3. Get code context
-
-```bash
-cortex context get_parser
-```
-
-```
---- get_parser (function) ---
-File: src/parser/mod.rs lines 14-21
-Signature: fn get_parser(language: Language) -> Box<dyn Parser>
-
-pub fn get_parser(language: Language) -> Box<dyn Parser> {
-    match language {
-        Language::Rust => Box::new(rust_parser::RustParser),
-        Language::Python => Box::new(python_parser::PythonParser),
-        ...
-    }
-}
-```
-
-### 4. Connect to Claude via MCP
-
-`./install.sh` configures this automatically. To set it up manually, add to your Claude config:
+`./install.sh` configures this automatically. Manual setup:
 
 ```json
 {
@@ -98,35 +48,74 @@ pub fn get_parser(language: Language) -> Box<dyn Parser> {
 }
 ```
 
-Claude will then have access to eight tools:
-- **`search_symbols`** — Find functions, classes, structs by name (returns JSON)
-- **`get_code_context`** — Read the source code of any indexed symbol (returns JSON)
-- **`list_directory_structure`** — Browse the project file tree (returns JSON)
-- **`index_project`** — Index or refresh a project (returns JSON)
-- **`get_index_status`** — Check if a project is indexed (returns JSON)
-- **`list_files`** — List files with filtering (returns JSON)
-- **`list_symbol_kinds`** — Get available symbol types (returns JSON)
-- **`get_symbol_stats`** — Get overall statistics (returns JSON)
+No need to manually index — Cortex auto-detects stale indexes and re-indexes before queries.
 
-### 5. Watch for changes
+### 2. CLI usage (optional)
 
 ```bash
-cortex watch ./my-project
+cortex index ./my-project        # Index a project
+cortex search "handler"          # Search symbols
+cortex search "Parser" --kind struct
+cortex context get_parser        # Get source code
+cortex watch ./my-project        # Auto-reindex on file changes
+cortex reset                     # Clear all indexes
 ```
 
-Automatically re-indexes files when you save them.
+## MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `search_symbols` | Find symbols by name with kind filter and pagination |
+| `get_code_context` | Retrieve full source code for a symbol by name |
+| `list_document_symbols` | List all symbols in a file with parent-child hierarchy |
+| `search_content` | Grep file contents by regex or plain text with context lines |
+| `find_references` | Find all references to a symbol across the project |
+| `search_by_semantic` | Full-text search across symbol names, signatures, docs |
+| `get_imports` | Analyze import dependencies (outgoing/incoming) for a file |
+| `list_directory_structure` | Browse project directory tree |
+| `list_files` | List files with extension filter |
+| `index_project` | Index or refresh a project |
+| `get_index_status` | Check if a project is indexed |
+| `list_symbol_kinds` | Get available symbol type filters |
+| `get_symbol_stats` | Get index statistics by kind and language |
+
+### Typical Workflow
+
+1. `get_index_status(path)` — triggers auto-index if needed
+2. `search_symbols("RfqBuyerService")` — find the symbol
+3. `get_code_context(symbol_name="RfqBuyerService")` — read the implementation
+4. `find_references(symbol_name="RfqBuyerService")` — find all usages
+5. `get_imports(file_path="src/app/rfq/services/rfq-buyer.service.ts")` — trace dependencies
+6. `search_content(pattern="TODO")` — grep for patterns
+
+### Auto-Reindex
+
+Cortex checks for stale indexes before each query. If source files have changed since the last index, it re-indexes automatically. This has a 30-second cooldown per project to avoid unnecessary work.
+
+### Error Format
+
+All errors return structured JSON:
+
+```json
+{
+  "error": {
+    "code": "symbol_not_found",
+    "message": "Symbol 'my_func' not found"
+  }
+}
+```
 
 ## Configuration
 
-All data is stored in `~/.cortex/`:
+Data is stored in `~/.cortex/`:
 
 ```
 ~/.cortex/
-├── config.toml     # Configuration file
+├── config.toml     # Optional config overrides
 └── db.sqlite       # Symbol index database
 ```
 
-Default `config.toml`:
+Default config (auto-generated):
 
 ```toml
 [database]
@@ -145,206 +134,30 @@ batch_size = 32
 debounce_ms = 500
 ```
 
-See [`config.example.toml`](config.example.toml) for all options with defaults.
+## Supported Symbol Types
 
-## MCP API Reference
-
-All MCP tools return structured JSON responses for programmatic access by AI agents.
-
-### search_symbols
-
-Search for code symbols by name pattern matching.
-
-**Request:**
-```json
-{
-  "query": "parser",
-  "kind": "struct",
-  "limit": 50,
-  "offset": 0
-}
-```
-
-**Response:**
-```json
-{
-  "symbols": [
-    {
-      "id": 123,
-      "name": "RustParser",
-      "kind": "struct",
-      "file_path": "src/parser/rust_parser.rs",
-      "project_root": "/path/to/project",
-      "start_line": 5,
-      "end_line": 5,
-      "signature": "struct RustParser"
-    }
-  ],
-  "total_count": 1,
-  "has_more": false
-}
-```
-
-### get_code_context
-
-Retrieve full source code for a symbol.
-
-**Request:**
-```json
-{
-  "symbol_name": "get_parser",
-  "file_path": "src/parser/mod.rs",
-  "context_lines": 2
-}
-```
-
-**Response:**
-```json
-{
-  "symbol_name": "get_parser",
-  "kind": "function",
-  "file_path": "src/parser/mod.rs",
-  "start_line": 14,
-  "end_line": 21,
-  "signature": "fn get_parser(language: Language) -> Box<dyn Parser>",
-  "code": "pub fn get_parser(language: Language) -> Box<dyn Parser> {\n    match language {\n        Language::Rust => Box::new(rust_parser::RustParser),\n        ...\n    }\n}",
-  "preview": "  14 | pub fn get_parser(language: Language) -> Box<dyn Parser> {\n  15 |     match language {\n  16 | ...",
-  "context_before": ["  12 | /// Get parser for a language", "  13 | "],
-  "context_after": ["  22 | }"]
-}
-```
-
-### list_directory_structure
-
-List directory structure with metadata.
-
-**Request:**
-```json
-{
-  "path": "/path/to/project",
-  "max_depth": 3,
-  "extension": "rs"
-}
-```
-
-**Response:**
-```json
-{
-  "root": "project",
-  "entries": [
-    {
-      "name": "main.rs",
-      "path": "src/main.rs",
-      "entry_type": "file",
-      "extension": "rs",
-      "language": "rust",
-      "size": 2048,
-      "depth": 1
-    }
-  ],
-  "file_count": 24,
-  "directory_count": 8
-}
-```
-
-### Error Format
-
-All errors follow a consistent JSON format:
-
-```json
-{
-  "error": {
-    "code": "symbol_not_found",
-    "message": "Symbol 'my_func' not found in src/main.rs",
-    "details": null
-  }
-}
-```
-
-Error codes:
-- `invalid_parameters` - Invalid or missing required parameters
-- `database_error` - Database connection or query failed
-- `symbol_not_found` - No matching symbol found
-- `file_not_found` - Requested file doesn't exist
-- `invalid_path` - Invalid directory path
-- `indexing_failed` - Indexing operation failed
-- `ambiguous_symbol` - Multiple symbols match the query
-- `serialization_error` - Failed to serialize response
-
-## CLI Reference
-
-```
-cortex index <PATH>       Index a project directory
-cortex search <QUERY>     Search for symbols (use --kind to filter)
-cortex context <SYMBOL>   Get source code for a symbol
-cortex serve              Start the MCP server (stdio transport)
-cortex watch <PATH>       Watch a directory and re-index on changes
-cortex reset [PATH]       Clear index (all, or for a specific path)
-```
+| Rust | Python | JavaScript / TypeScript |
+|------|--------|------------------------|
+| `fn` (function) | `def` (function) | `function` declaration |
+| `struct` | `class` | `class` |
+| `impl` + methods | class methods | methods, constructor |
+| `trait` | | arrow function (`const fn = () =>`) |
+| `enum` | | `interface` |
+| `const` | | `type` alias |
+| `mod` | | `export` functions/classes |
 
 ## How It Works
 
 ```
-┌─────────────┐    ┌─────────────┐    ┌──────────────┐    ┌─────────┐
-│  Directory  │───▶│  Scanner    │───▶│   Parser     │───▶│  SQLite │
-│  Walker     │    │ (.gitignore)│    │ (tree-sitter)│    │  Index  │
-└─────────────┘    └─────────────┘    └──────────────┘    └─────────┘
-                                                            │
-                                       ┌────────────────────┘
-                                       ▼
-                                  ┌─────────┐
-                                  │   MCP   │◀──── Claude / LLM
-                                  │  Server │      via stdio
-                                  └─────────┘
+Source Files ──▶ Tree-sitter Parser ──▶ SQLite Index ──▶ MCP Server ──▶ AI Assistant
+                 (per language)         (symbols +       (stdio        (Claude, etc.)
+                                        imports + FTS)   JSON-RPC)
 ```
 
-1. **Scanner** walks the directory tree respecting `.gitignore` rules
-2. **Parser** generates an AST for each file using Tree-sitter and extracts symbol metadata (name, kind, line range, signature)
-3. **Indexer** stores symbols in SQLite with file content hashes for incremental updates
-4. **MCP Server** exposes query tools to LLMs over stdio JSON-RPC
-
-## Supported Symbol Types
-
-| Rust | Python | JavaScript |
-|------|--------|------------|
-| `fn` (functions) | `def` (functions) | `function` declarations |
-| `struct` | `class` | `class` |
-| `impl` (with methods) | Methods inside classes | Methods, constructor |
-| `trait` | Module docstrings | Arrow functions (`const fn = () =>`) |
-| `enum` | | `export` functions/classes |
-| `const` | | |
-| `mod` | | |
-
-## Development
-
-```bash
-# Build
-cargo build
-
-# Run tests
-cargo test
-
-# Check formatting
-cargo fmt --check
-
-# Lint
-cargo clippy
-
-# Run locally
-cargo run -- index .
-cargo run -- search "Parser"
-cargo run -- serve
-```
-
-### Feature flags
-
-| Flag | Description | Extra dependencies |
-|------|-------------|--------------------|
-| `embeddings` | Local embedding generation + vector search via LanceDB | `pkg-config`, `libssl-dev` |
-
-```bash
-cargo build --features embeddings
-```
+1. **Scanner** walks the directory respecting `.gitignore`
+2. **Parser** generates ASTs with Tree-sitter, extracts symbols and import statements
+3. **Indexer** stores in SQLite with file hashes for incremental updates, FTS5 for text search
+4. **MCP Server** serves 13 tools over stdio, auto-reindexes when stale
 
 ## Architecture
 
@@ -353,16 +166,24 @@ src/
 ├── main.rs           CLI entry point
 ├── config.rs         TOML configuration
 ├── error.rs          Error types
-├── models/           Data types (Symbol, FileRecord, Language)
+├── models/           Symbol, Import, Language, SymbolKind
 ├── scanner/          Directory walking with .gitignore
-├── parser/           Tree-sitter parsers per language
-├── indexer/          SQLite storage and indexing pipeline
-├── query/            Symbol search and code context retrieval
+├── parser/           Tree-sitter parsers (Rust, Python, JS, TS)
+├── indexer/          SQLite storage, migrations, indexing pipeline
+├── query/            Search, context, references, content, semantic, imports
 ├── watcher/          File change detection via notify
-├── embeddings/       Local embedding generation (optional)
-└── mcp_server/       MCP tool server
+└── mcp_server/       MCP tool server with 13 tools
+```
+
+## Development
+
+```bash
+cargo build              # Build
+cargo test               # Run tests (17 parser tests)
+cargo run -- index .     # Index this project
+cargo run -- serve       # Start MCP server
 ```
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT

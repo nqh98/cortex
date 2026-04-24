@@ -1,5 +1,5 @@
-use crate::models::{Language, Symbol, SymbolKind};
-use crate::parser::Parser;
+use crate::models::{Import, ImportType, Language, Symbol, SymbolKind};
+use crate::parser::{ParseResult, Parser};
 use std::path::Path;
 
 pub struct JsParser;
@@ -9,7 +9,7 @@ impl Parser for JsParser {
         Language::JavaScript
     }
 
-    fn parse(&self, content: &str, path: &Path) -> Vec<Symbol> {
+    fn parse(&self, content: &str, path: &Path) -> ParseResult {
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&tree_sitter_javascript::LANGUAGE.into())
@@ -21,8 +21,10 @@ impl Parser for JsParser {
 
         let root = tree.root_node();
         let mut symbols = Vec::new();
+        let mut imports = Vec::new();
         extract_js_symbols(&root, content, &mut symbols);
-        symbols
+        extract_js_imports(&root, content, &mut imports);
+        ParseResult { symbols, imports }
     }
 }
 
@@ -205,6 +207,98 @@ fn find_child_by_kind<'a>(node: &'a tree_sitter::Node, kind: &str) -> Option<tre
     None
 }
 
+fn extract_js_imports(
+    node: &tree_sitter::Node,
+    source: &str,
+    imports: &mut Vec<Import>,
+) {
+    match node.kind() {
+        "import_statement" => {
+            let line = node.start_position().row + 1;
+            let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("").to_string();
+            let mut from_path = None;
+            let mut symbols_list = Vec::new();
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                match child.kind() {
+                    "string" => {
+                        let text = child.utf8_text(source.as_bytes()).ok().unwrap_or("");
+                        from_path = Some(text.trim_matches(|c| c == '\'' || c == '"').to_string());
+                    }
+                    "named_imports" => {
+                        let mut ic = child.walk();
+                        for cc in child.children(&mut ic) {
+                            if cc.kind() == "import_specifier" {
+                                if let Some(name) = cc.child_by_field_name("name") {
+                                    if let Some(t) = name.utf8_text(source.as_bytes()).ok() {
+                                        symbols_list.push(t.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "identifier" => {
+                        if let Some(t) = child.utf8_text(source.as_bytes()).ok() {
+                            symbols_list.push(t.to_string());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let import_symbol = if symbols_list.is_empty() {
+                from_path.clone().unwrap_or_default()
+            } else {
+                symbols_list.join(", ")
+            };
+            imports.push(Import {
+                imported_symbol: import_symbol,
+                imported_from_path: from_path,
+                import_type: ImportType::Import,
+                start_line: Some(line),
+                raw_statement: Some(raw),
+            });
+            return;
+        }
+        "call_expression" => {
+            let func = node.child_by_field_name("function");
+            if let Some(f) = func {
+                if let Some(name) = f.utf8_text(source.as_bytes()).ok() {
+                    if name == "require" {
+                        let line = node.start_position().row + 1;
+                        let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("").to_string();
+                        let args = node.child_by_field_name("arguments");
+                        let from_path = args.and_then(|a| {
+                            a.children(&mut a.walk())
+                                .filter_map(|c| {
+                                    if c.kind() == "string" {
+                                        c.utf8_text(source.as_bytes()).ok().map(|s| {
+                                            s.trim_matches(|ch| ch == '\'' || ch == '"').to_string()
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .next()
+                        });
+                        imports.push(Import {
+                            imported_symbol: from_path.clone().unwrap_or_default(),
+                            imported_from_path: from_path,
+                            import_type: ImportType::Require,
+                            start_line: Some(line),
+                            raw_statement: Some(raw),
+                        });
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        extract_js_imports(&child, source, imports);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,7 +308,8 @@ mod tests {
     fn test_parse_function() {
         let code = "function greet(name) {\n    return `Hello ${name}`;\n}\n";
         let parser = JsParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.js"));
+        let result = parser.parse(code, &PathBuf::from("test.js"));
+        let symbols = &result.symbols;
         assert!(symbols.iter().any(|s| s.name == "greet" && s.kind == SymbolKind::Function));
     }
 
@@ -222,7 +317,8 @@ mod tests {
     fn test_parse_class() {
         let code = "class Animal {\n    constructor(name) {\n        this.name = name;\n    }\n\n    speak() {\n        return `${this.name} makes a noise`;\n    }\n}\n";
         let parser = JsParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.js"));
+        let result = parser.parse(code, &PathBuf::from("test.js"));
+        let symbols = &result.symbols;
         assert!(symbols.iter().any(|s| s.name == "Animal" && s.kind == SymbolKind::Class));
         assert!(symbols.iter().any(|s| s.name == "constructor" && s.kind == SymbolKind::Method));
         assert!(symbols.iter().any(|s| s.name == "speak" && s.kind == SymbolKind::Method));
@@ -232,7 +328,8 @@ mod tests {
     fn test_parse_arrow_function() {
         let code = "const add = (a, b) => a + b;\n";
         let parser = JsParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.js"));
+        let result = parser.parse(code, &PathBuf::from("test.js"));
+        let symbols = &result.symbols;
         assert!(symbols.iter().any(|s| s.name == "add" && s.kind == SymbolKind::Function));
     }
 
@@ -240,7 +337,8 @@ mod tests {
     fn test_parse_export() {
         let code = "export function handler(req, res) {\n    res.send(\"ok\");\n}\n\nexport class Controller {\n    index() {}\n}\n";
         let parser = JsParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.js"));
+        let result = parser.parse(code, &PathBuf::from("test.js"));
+        let symbols = &result.symbols;
         assert!(symbols.iter().any(|s| s.name == "handler" && s.kind == SymbolKind::Function));
         assert!(symbols.iter().any(|s| s.name == "Controller" && s.kind == SymbolKind::Class));
     }
@@ -249,7 +347,8 @@ mod tests {
     fn test_parse_extends() {
         let code = "class Dog extends Animal {\n    bark() {}\n}\n";
         let parser = JsParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.js"));
+        let result = parser.parse(code, &PathBuf::from("test.js"));
+        let symbols = &result.symbols;
         let class = symbols.iter().find(|s| s.kind == SymbolKind::Class).unwrap();
         assert!(class.signature.as_ref().unwrap().contains("extends"));
     }

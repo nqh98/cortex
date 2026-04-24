@@ -3,6 +3,77 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Semantic search result
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticSearchResult {
+    /// Query used for the search
+    pub query: String,
+    /// Total matching symbols found
+    pub total_count: u32,
+    /// Whether more results are available
+    pub has_more: bool,
+    /// Matching symbols
+    pub symbols: Vec<SymbolMatch>,
+}
+
+/// Find references result
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FindReferencesResult {
+    /// Symbol name searched
+    pub symbol_name: String,
+    /// Total references found
+    pub total_count: u32,
+    /// Whether more results are available
+    pub has_more: bool,
+    /// Reference matches
+    pub references: Vec<ReferenceMatchEntry>,
+}
+
+/// Individual reference match
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReferenceMatchEntry {
+    /// File path (relative to project root)
+    pub file_path: String,
+    /// Project root path
+    pub project_root: String,
+    /// Line number (1-indexed)
+    pub line_number: usize,
+    /// Content of the line containing the reference
+    pub line_content: String,
+    /// Type of reference (import, call, type_usage, definition, other)
+    pub reference_type: String,
+}
+
+/// Content search result
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContentSearchResult {
+    /// Pattern used for the search
+    pub pattern: String,
+    /// Total matching lines found
+    pub total_count: u32,
+    /// Whether more results are available
+    pub has_more: bool,
+    /// Matching lines with context
+    pub matches: Vec<ContentMatchEntry>,
+}
+
+/// Individual content match
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ContentMatchEntry {
+    /// File path (relative to project root)
+    pub file_path: String,
+    /// Project root path
+    pub project_root: String,
+    /// Line number of the match (1-indexed)
+    pub line_number: usize,
+    /// Content of the matched line
+    pub line_content: String,
+    /// 2 lines before the match for context
+    pub context_before: Vec<String>,
+    /// 2 lines after the match for context
+    pub context_after: Vec<String>,
+}
+
 /// Structured search result
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchResult {
@@ -155,4 +226,76 @@ pub struct SymbolStats {
     pub by_kind: HashMap<String, u32>,
     /// Count by language
     pub by_language: HashMap<String, u32>,
+}
+
+/// Document symbols result
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DocumentSymbolResult {
+    /// File path (relative to project root)
+    pub file_path: String,
+    /// Project root path
+    pub project_root: String,
+    /// Language of the file
+    pub language: Option<String>,
+    /// Symbols in the file, sorted by start line
+    pub symbols: Vec<DocumentSymbolEntry>,
+}
+
+/// Individual symbol entry in a document
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DocumentSymbolEntry {
+    /// Database ID
+    pub id: i64,
+    /// Symbol name
+    pub name: String,
+    /// Symbol kind
+    pub kind: SymbolKind,
+    /// Start line number (1-indexed)
+    pub start_line: i64,
+    /// End line number (1-indexed)
+    pub end_line: i64,
+    /// Start column
+    pub start_col: i64,
+    /// End column
+    pub end_col: i64,
+    /// Function/method signature
+    pub signature: Option<String>,
+    /// Documentation
+    pub documentation: Option<String>,
+    /// Child symbols (symbols nested within this one)
+    pub children: Vec<DocumentSymbolEntry>,
+}
+
+/// Import analysis result
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ImportAnalysisResult {
+    /// File path analyzed (relative to project root)
+    pub file_path: String,
+    /// Project root path
+    pub project_root: String,
+    /// Imports this file makes from other files
+    pub outgoing: Vec<ImportEntry>,
+    /// Files that import from this file
+    pub incoming: Vec<ImportEntry>,
+}
+
+/// Individual import entry
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ImportEntry {
+    /// Database ID
+    pub id: i64,
+    /// Symbol being imported
+    pub imported_symbol: String,
+    /// Path the symbol is imported from (raw source string)
+    pub imported_from_path: Option<String>,
+    /// Import type (import, require, use, from, include)
+    pub import_type: String,
+    /// Line number of the import statement
+    pub start_line: Option<i64>,
+    /// Raw import statement text
+    pub raw_statement: Option<String>,
+    /// File containing this import (relative to project root)
+    pub file_path: String,
+    /// Project root path
+    pub project_root: String,
 }

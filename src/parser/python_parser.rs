@@ -1,5 +1,5 @@
-use crate::models::{Language, Symbol, SymbolKind};
-use crate::parser::Parser;
+use crate::models::{Import, ImportType, Language, Symbol, SymbolKind};
+use crate::parser::{ParseResult, Parser};
 use std::path::Path;
 
 pub struct PythonParser;
@@ -9,7 +9,7 @@ impl Parser for PythonParser {
         Language::Python
     }
 
-    fn parse(&self, content: &str, path: &Path) -> Vec<Symbol> {
+    fn parse(&self, content: &str, path: &Path) -> ParseResult {
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&tree_sitter_python::LANGUAGE.into())
@@ -21,8 +21,10 @@ impl Parser for PythonParser {
 
         let root = tree.root_node();
         let mut symbols = Vec::new();
+        let mut imports = Vec::new();
         extract_python_symbols(&root, content, &mut symbols);
-        symbols
+        extract_python_imports(&root, content, &mut imports);
+        ParseResult { symbols, imports }
     }
 }
 
@@ -148,6 +150,104 @@ fn extract_python_docstring(node: &tree_sitter::Node, source: &str) -> Option<St
     None
 }
 
+fn extract_python_imports(
+    node: &tree_sitter::Node,
+    source: &str,
+    imports: &mut Vec<Import>,
+) {
+    match node.kind() {
+        "import_statement" => {
+            let line = node.start_position().row + 1;
+            let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("").to_string();
+            // import X, Y, Z
+            let mut cursor = node.walk();
+            let dotted_names: Vec<String> = node.children(&mut cursor)
+                .filter(|c| c.kind() == "dotted_name" || c.kind() == "aliased_import")
+                .filter_map(|c| c.utf8_text(source.as_bytes()).ok())
+                .map(|s| s.to_string())
+                .collect();
+
+            for name in &dotted_names {
+                let symbol = name.split_whitespace().last().unwrap_or(name).to_string();
+                imports.push(Import {
+                    imported_symbol: symbol,
+                    imported_from_path: Some(name.clone()),
+                    import_type: ImportType::Import,
+                    start_line: Some(line),
+                    raw_statement: Some(raw.clone()),
+                });
+            }
+            if dotted_names.is_empty() {
+                imports.push(Import {
+                    imported_symbol: raw.clone(),
+                    imported_from_path: None,
+                    import_type: ImportType::Import,
+                    start_line: Some(line),
+                    raw_statement: Some(raw),
+                });
+            }
+            return;
+        }
+        "import_from_statement" => {
+            let line = node.start_position().row + 1;
+            let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("").to_string();
+            // from X import Y, Z
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.children(&mut cursor).collect();
+
+            let mut module_path = None;
+            let mut symbol_names = Vec::new();
+
+            for child in &children {
+                match child.kind() {
+                    "dotted_name" | "relative_import" => {
+                        if module_path.is_none() {
+                            module_path = child.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+                        }
+                    }
+                    "identifier" => {
+                        if let Some(t) = child.utf8_text(source.as_bytes()).ok() {
+                            symbol_names.push(t.to_string());
+                        }
+                    }
+                    "wildcard_import" => {
+                        symbol_names.push("*".to_string());
+                    }
+                    "aliased_import" => {
+                        if let Some(name) = child.child(0) {
+                            if let Some(t) = name.utf8_text(source.as_bytes()).ok() {
+                                symbol_names.push(t.to_string());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let import_symbol = if symbol_names.is_empty() {
+                module_path.clone().unwrap_or_default()
+            } else {
+                symbol_names.join(", ")
+            };
+
+            imports.push(Import {
+                imported_symbol: import_symbol,
+                imported_from_path: module_path,
+                import_type: ImportType::From,
+                start_line: Some(line),
+                raw_statement: Some(raw),
+            });
+            return;
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        extract_python_imports(&child, source, imports);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,7 +260,8 @@ def hello(name):
     print(f"Hello {name}")
 "#;
         let parser = PythonParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.py"));
+        let result = parser.parse(code, &PathBuf::from("test.py"));
+        let symbols = &result.symbols;
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "hello");
         assert_eq!(symbols[0].kind, SymbolKind::Function);
@@ -177,7 +278,8 @@ class Dog:
         return f"{self.name} says woof!"
 "#;
         let parser = PythonParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.py"));
+        let result = parser.parse(code, &PathBuf::from("test.py"));
+        let symbols = &result.symbols;
         assert!(symbols.iter().any(|s| s.name == "Dog" && s.kind == SymbolKind::Class));
         assert!(symbols.iter().any(|s| s.name == "__init__" && s.kind == SymbolKind::Method));
         assert!(symbols.iter().any(|s| s.name == "bark" && s.kind == SymbolKind::Method));
@@ -190,7 +292,8 @@ class Animal(Base):
     pass
 "#;
         let parser = PythonParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.py"));
+        let result = parser.parse(code, &PathBuf::from("test.py"));
+        let symbols = &result.symbols;
         let class = symbols.iter().find(|s| s.kind == SymbolKind::Class).unwrap();
         assert!(class.signature.as_ref().unwrap().contains("Base"));
     }
@@ -203,7 +306,8 @@ def greet(name):
     return f"Hello {name}"
 "#;
         let parser = PythonParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.py"));
+        let result = parser.parse(code, &PathBuf::from("test.py"));
+        let symbols = &result.symbols;
         assert_eq!(
             symbols[0].documentation.as_deref(),
             Some("Say hello to someone.")

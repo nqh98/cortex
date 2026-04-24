@@ -1,5 +1,5 @@
-use crate::models::{Language, Symbol, SymbolKind};
-use crate::parser::Parser;
+use crate::models::{Import, ImportType, Language, Symbol, SymbolKind};
+use crate::parser::{ParseResult, Parser};
 use std::path::Path;
 
 pub struct RustParser;
@@ -9,7 +9,7 @@ impl Parser for RustParser {
         Language::Rust
     }
 
-    fn parse(&self, content: &str, path: &Path) -> Vec<Symbol> {
+    fn parse(&self, content: &str, path: &Path) -> ParseResult {
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&tree_sitter_rust::LANGUAGE.into())
@@ -21,8 +21,10 @@ impl Parser for RustParser {
 
         let root = tree.root_node();
         let mut symbols = Vec::new();
+        let mut imports = Vec::new();
         extract_symbols(&root, content, &mut symbols);
-        symbols
+        extract_imports(&root, content, &mut imports);
+        ParseResult { symbols, imports }
     }
 }
 
@@ -287,6 +289,68 @@ fn extract_doc_comments(node: &tree_sitter::Node, source: &str) -> Option<String
     Some(comments.join("\n"))
 }
 
+fn extract_imports(
+    node: &tree_sitter::Node,
+    source: &str,
+    imports: &mut Vec<Import>,
+) {
+    if node.kind() == "use_declaration" {
+        let line = node.start_position().row + 1;
+        let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("");
+
+        // Extract the path from use statement (e.g., "use crate::parser::Parser")
+        let path_text = node
+            .children(&mut node.walk())
+            .skip(1) // skip "use" keyword
+            .filter_map(|c| {
+                if c.kind() == "scoped_identifier"
+                    || c.kind() == "identifier"
+                    || c.kind() == "use_list"
+                    || c.kind() == "scoped_use_list"
+                {
+                    c.utf8_text(source.as_bytes()).ok()
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("");
+
+        if !path_text.is_empty() {
+            // Extract the final identifier as the symbol name
+            let symbol_name = path_text
+                .split("::")
+                .last()
+                .unwrap_or("")
+                .trim_start_matches('{')
+                .trim_end_matches('}')
+                .split(',')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+
+            imports.push(Import {
+                imported_symbol: if symbol_name == "*" || symbol_name.is_empty() {
+                    path_text.clone()
+                } else {
+                    symbol_name
+                },
+                imported_from_path: Some(path_text),
+                import_type: ImportType::Use,
+                start_line: Some(line),
+                raw_statement: Some(raw.to_string()),
+            });
+        }
+        return;
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        extract_imports(&child, source, imports);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,7 +360,8 @@ mod tests {
     fn test_parse_simple_function() {
         let code = "fn hello_world() {\n    println!(\"Hello\");\n}\n";
         let parser = RustParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.rs"));
+        let result = parser.parse(code, &PathBuf::from("test.rs"));
+        let symbols = &result.symbols;
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "hello_world");
         assert_eq!(symbols[0].kind, SymbolKind::Function);
@@ -306,7 +371,8 @@ mod tests {
     fn test_parse_struct() {
         let code = "struct User {\n    name: String,\n    age: u32,\n}\n";
         let parser = RustParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.rs"));
+        let result = parser.parse(code, &PathBuf::from("test.rs"));
+        let symbols = &result.symbols;
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "User");
         assert_eq!(symbols[0].kind, SymbolKind::Struct);
@@ -316,7 +382,8 @@ mod tests {
     fn test_parse_enum() {
         let code = "enum Color {\n    Red,\n    Green,\n    Blue,\n}\n";
         let parser = RustParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.rs"));
+        let result = parser.parse(code, &PathBuf::from("test.rs"));
+        let symbols = &result.symbols;
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "Color");
         assert_eq!(symbols[0].kind, SymbolKind::Enum);
@@ -326,7 +393,8 @@ mod tests {
     fn test_parse_impl_with_methods() {
         let code = "impl User {\n    fn new(name: String) -> Self {\n        Self { name, age: 0 }\n    }\n\n    fn greet(&self) -> String {\n        format!(\"Hi, I'm {}\", self.name)\n    }\n}\n";
         let parser = RustParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.rs"));
+        let result = parser.parse(code, &PathBuf::from("test.rs"));
+        let symbols = &result.symbols;
         assert!(symbols.len() >= 3, "Expected >= 3 symbols, got {}", symbols.len());
         let impl_sym = symbols.iter().find(|s| s.kind == SymbolKind::Impl).unwrap();
         assert_eq!(impl_sym.name, "User");
@@ -338,7 +406,8 @@ mod tests {
     fn test_parse_trait() {
         let code = "trait Drawable {\n    fn draw(&self);\n}\n";
         let parser = RustParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.rs"));
+        let result = parser.parse(code, &PathBuf::from("test.rs"));
+        let symbols = &result.symbols;
         assert!(symbols.iter().any(|s| s.name == "Drawable" && s.kind == SymbolKind::Trait));
     }
 
@@ -346,7 +415,8 @@ mod tests {
     fn test_parse_constant() {
         let code = "const MAX_SIZE: usize = 1024;\n";
         let parser = RustParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.rs"));
+        let result = parser.parse(code, &PathBuf::from("test.rs"));
+        let symbols = &result.symbols;
         assert!(symbols.iter().any(|s| s.name == "MAX_SIZE" && s.kind == SymbolKind::Constant));
     }
 
@@ -354,7 +424,8 @@ mod tests {
     fn test_function_signature() {
         let code = "fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
         let parser = RustParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.rs"));
+        let result = parser.parse(code, &PathBuf::from("test.rs"));
+        let symbols = &result.symbols;
         assert_eq!(symbols.len(), 1);
         let sig = symbols[0].signature.as_ref().unwrap();
         assert!(sig.contains("fn add"), "Signature: {sig}");
@@ -365,7 +436,8 @@ mod tests {
     fn test_parse_mixed() {
         let code = "mod my_module;\n\nconst VERSION: &str = \"1.0\";\n\nstruct Config {\n    debug: bool,\n}\n\nimpl Config {\n    fn new() -> Self {\n        Self { debug: false }\n    }\n}\n\nfn main() {\n    let cfg = Config::new();\n}\n\nenum Status {\n    Active,\n    Inactive,\n}\n";
         let parser = RustParser;
-        let symbols = parser.parse(code, &PathBuf::from("test.rs"));
+        let result = parser.parse(code, &PathBuf::from("test.rs"));
+        let symbols = &result.symbols;
         let kinds: Vec<_> = symbols.iter().map(|s| s.kind).collect();
         assert!(kinds.contains(&SymbolKind::Module), "Missing Module in {:?}", kinds);
         assert!(kinds.contains(&SymbolKind::Constant), "Missing Constant in {:?}", kinds);

@@ -3,12 +3,17 @@ pub mod python_parser;
 pub mod rust_parser;
 pub mod ts_parser;
 
-use crate::models::{Language, Symbol};
+use crate::models::{Import, Language, Symbol};
 use std::path::Path;
+
+pub struct ParseResult {
+    pub symbols: Vec<Symbol>,
+    pub imports: Vec<Import>,
+}
 
 pub trait Parser: Send + Sync {
     fn language(&self) -> Language;
-    fn parse(&self, content: &str, path: &Path) -> Vec<Symbol>;
+    fn parse(&self, content: &str, path: &Path) -> ParseResult;
 }
 
 pub fn get_parser(language: Language) -> Box<dyn Parser> {

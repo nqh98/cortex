@@ -32,8 +32,6 @@ impl Indexer {
     pub async fn index_project(&self, project_path: &Path) -> Result<IndexStats> {
         info!("Indexing project: {}", project_path.display());
 
-        append_to_gitignore(project_path);
-
         let files = walker::walk_directory(project_path)?;
         info!("Found {} files to index", files.len());
 
@@ -113,13 +111,14 @@ impl Indexer {
 
         // Parse the file
         let parser = parser::get_parser(language);
-        let symbols = parser.parse(&content, absolute_path);
+        let result = parser.parse(&content, absolute_path);
 
-        let symbol_count = symbols.len();
+        let symbol_count = result.symbols.len();
 
         // Store in database
         let file_id = db::upsert_file(&self.pool, project_root, &path_str, &hash, language.as_str()).await?;
-        db::insert_symbols(&self.pool, file_id, &symbols).await?;
+        db::insert_symbols(&self.pool, file_id, &result.symbols).await?;
+        db::insert_imports(&self.pool, file_id, &result.imports).await?;
 
         debug!(
             "Indexed {}: {} symbols",
@@ -150,25 +149,4 @@ fn compute_hash(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
     hex::encode(hasher.finalize())
-}
-
-fn append_to_gitignore(project_path: &Path) {
-    let gitignore_path = project_path.join(".gitignore");
-    let entry = ".cortex/";
-
-    let existing = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
-    if existing.lines().any(|line| line.trim() == entry) {
-        return;
-    }
-
-    let content = if existing.is_empty() || !existing.ends_with('\n') {
-        format!("\n{entry}\n")
-    } else {
-        format!("{entry}\n")
-    };
-
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&gitignore_path) {
-        let _ = f.write_all(content.as_bytes());
-    }
 }

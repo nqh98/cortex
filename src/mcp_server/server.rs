@@ -1,34 +1,128 @@
 use crate::config::Config;
 use crate::indexer::{db, Indexer};
 use crate::mcp_server::models::{
-    CodeContextResult, DirectoryListing, IndexResult, IndexStatus, SearchResult,
+    CodeContextResult, ContentMatchEntry, ContentSearchResult, DirectoryListing,
+    DocumentSymbolEntry, DocumentSymbolResult, FindReferencesResult, ImportAnalysisResult,
+    ImportEntry, IndexResult, IndexStatus, ReferenceMatchEntry, SearchResult, SemanticSearchResult,
     SymbolMatch, SymbolStats,
 };
-use crate::query::{context, search};
+use crate::query::{content, context, document, imports_query, references, search, semantic};
 use crate::scanner::walker;
-use rmcp::model::{Implementation, ServerCapabilities, ServerInfo};
-use rmcp::{tool, ServerHandler, ServiceExt};
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::{ServerCapabilities, ServerInfo};
+use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
-#[derive(Debug, Clone, Default)]
+const REINDEX_COOLDOWN: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Default)]
 pub struct CortexServer {
     config: Arc<Config>,
+    pool: tokio::sync::OnceCell<db::DbPool>,
+    last_index_check: tokio::sync::Mutex<HashMap<String, Instant>>,
 }
 
 impl CortexServer {
     pub fn new(config: Config) -> Self {
         Self {
             config: Arc::new(config),
+            pool: tokio::sync::OnceCell::new(),
+            last_index_check: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
-    async fn get_pool(&self) -> crate::error::Result<db::DbPool> {
-        db::init_pool(&format!("sqlite:{}", self.config.database.path)).await
+    async fn get_pool(&self) -> crate::error::Result<&db::DbPool> {
+        let db_path = format!("sqlite:{}", self.config.database.path);
+        self.pool
+            .get_or_try_init(|| db::init_pool(&db_path))
+            .await
     }
+
+    async fn ensure_indexed(&self, project_root: &str) -> crate::error::Result<()> {
+        // Throttle: skip if checked recently
+        {
+            let checks = self.last_index_check.lock().await;
+            if let Some(last) = checks.get(project_root) {
+                if last.elapsed() < REINDEX_COOLDOWN {
+                    return Ok(());
+                }
+            }
+        }
+
+        let pool = self.get_pool().await?;
+        let path = Path::new(project_root);
+
+        let (_, _, last_indexed) = db::get_project_stats(pool, project_root).await?;
+
+        let needs_reindex = match last_indexed {
+            None => true,
+            Some(ref ts) => {
+                let last_time = parse_db_timestamp(ts);
+                has_stale_files(path, last_time)
+            }
+        };
+
+        if needs_reindex {
+            let indexer = Indexer::new(&self.config).await?;
+            indexer.index_project(path).await?;
+        }
+
+        self.last_index_check.lock().await
+            .insert(project_root.to_string(), Instant::now());
+
+        Ok(())
+    }
+}
+
+fn parse_db_timestamp(ts: &str) -> SystemTime {
+    // SQLite CURRENT_TIMESTAMP format: "YYYY-MM-DD HH:MM:SS"
+    let parts: Vec<u64> = ts.split(|c: char| !c.is_ascii_digit())
+        .filter_map(|s| s.parse().ok())
+        .collect();
+
+    if parts.len() < 6 {
+        return SystemTime::UNIX_EPOCH;
+    }
+
+    let [year, month, day, hour, minute, second] = [parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]];
+
+    // Simple days-since-epoch calculation
+    let days = days_from_ce(year, month as u8, day as u8);
+    let secs = (days as u64) * 86400 + hour * 3600 + minute * 60 + second;
+    // Days from CE to Unix epoch (1970-01-01) = 719163
+    let unix_secs = secs.saturating_sub(719163 * 86400);
+
+    SystemTime::UNIX_EPOCH + Duration::from_secs(unix_secs)
+}
+
+fn days_from_ce(year: u64, month: u8, day: u8) -> u64 {
+    // Algorithm fromchrono
+    let y = year as i64;
+    let m = month as i64;
+    let d = day as i64;
+    let days = (y * 365 + y / 4 - y / 100 + y / 400
+        + (153 * m + 2) / 5 + d - 306) as i64;
+    days as u64 + 366 // offset to CE
+}
+
+fn has_stale_files(project_path: &Path, since: SystemTime) -> bool {
+    let Ok(files) = walker::walk_directory(project_path) else { return false };
+
+    for file_entry in &files {
+        if let Ok(metadata) = std::fs::metadata(&file_entry.path) {
+            if let Ok(modified) = metadata.modified() {
+                if modified > since {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Search symbols request parameters
@@ -76,6 +170,79 @@ pub struct ListDirectoryRequest {
     pub extension: Option<String>,
 }
 
+/// List document symbols request parameters
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListDocumentSymbolsRequest {
+    /// Relative path to the source file within the project
+    #[schemars(description = "Relative path to the source file within the project (e.g. src/parser/mod.rs)")]
+    pub file_path: String,
+    /// Absolute path to the project root directory
+    #[schemars(description = "Absolute path to the project root directory")]
+    pub project_root: String,
+}
+
+/// Search content request parameters
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchContentRequest {
+    /// Regex or plain text pattern to search for
+    #[schemars(description = "Regex or plain text pattern to search for in file contents")]
+    pub pattern: String,
+    /// Absolute path to the project root directory
+    #[schemars(description = "Absolute path to the project root directory")]
+    pub path: String,
+    /// Filter by file extension (e.g., 'ts', 'rs')
+    #[schemars(description = "Filter by file extension (e.g., 'ts', 'rs'). Omit for all files.")]
+    pub file_extension: Option<String>,
+    /// Maximum number of matches to return (default: 50)
+    #[schemars(description = "Maximum number of matches to return (default: 50, max: 200)")]
+    pub limit: Option<u32>,
+}
+
+/// Find references request parameters
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FindReferencesRequest {
+    /// Name of the symbol to find references for
+    #[schemars(description = "Name of the symbol to find references for")]
+    pub symbol_name: String,
+    /// Absolute path to the project root directory
+    #[schemars(description = "Absolute path to the project root directory")]
+    pub path: String,
+    /// Relative path to disambiguate when multiple symbols share the same name
+    #[schemars(description = "Relative path to disambiguate when multiple symbols share the same name")]
+    pub file_path: Option<String>,
+    /// Maximum number of results (default: 50)
+    #[schemars(description = "Maximum number of results to return (default: 50, max: 100)")]
+    pub limit: Option<u32>,
+}
+
+/// Semantic search request parameters
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchBySemanticRequest {
+    /// Natural language or keyword query to search for
+    #[schemars(description = "Natural language or keyword query to search for (e.g., 'rate limiting', 'database query'). Searches symbol names, signatures, and documentation.")]
+    pub query: String,
+    /// Absolute path to the project root directory
+    #[schemars(description = "Absolute path to the project root directory")]
+    pub path: String,
+    /// Maximum number of results (default: 50)
+    #[schemars(description = "Maximum number of results to return (default: 50, max: 100)")]
+    pub limit: Option<u32>,
+}
+
+/// Get imports request parameters
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetImportsRequest {
+    /// Relative path to the source file within the project
+    #[schemars(description = "Relative path to the source file within the project (e.g. src/parser/mod.rs)")]
+    pub file_path: String,
+    /// Absolute path to the project root directory
+    #[schemars(description = "Absolute path to the project root directory")]
+    pub project_root: String,
+    /// Direction: 'outgoing' (what this file imports), 'incoming' (what imports this file), or 'both'
+    #[schemars(description = "Direction of import analysis: 'outgoing' (what this file imports), 'incoming' (what imports this file), or 'both' (default: both)")]
+    pub direction: Option<String>,
+}
+
 /// Index project request parameters
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct IndexProjectRequest {
@@ -109,7 +276,7 @@ pub struct ListFilesRequest {
     pub limit: Option<usize>,
 }
 
-#[tool(tool_box)]
+#[tool_router]
 impl CortexServer {
     /// Search for code symbols by name pattern matching.
     ///
@@ -122,7 +289,7 @@ impl CortexServer {
     #[tool(description = "Search for code symbols by name pattern matching. Supports filtering by kind and pagination. Returns structured JSON with symbol metadata and file locations.")]
     async fn search_symbols(
         &self,
-        #[tool(aggr)] request: SearchSymbolsRequest,
+        Parameters(request): Parameters<SearchSymbolsRequest>,
     ) -> String {
         if request.query.trim().is_empty() {
             return serde_json::json!({
@@ -203,7 +370,7 @@ impl CortexServer {
     #[tool(description = "Get the source code for a symbol by name. Use file_path to disambiguate when multiple symbols have the same name. Returns structured JSON with full implementation and optional context lines.")]
     async fn get_code_context(
         &self,
-        #[tool(aggr)] request: GetCodeContextRequest,
+        Parameters(request): Parameters<GetCodeContextRequest>,
     ) -> String {
         if request.symbol_name.trim().is_empty() {
             return serde_json::json!({
@@ -265,13 +432,449 @@ impl CortexServer {
         }).to_string())
     }
 
+    /// List all symbols defined in a specific file (like LSP documentSymbol).
+    ///
+    /// Returns symbols sorted by line with parent-child hierarchy.
+    #[tool(description = "List all symbols defined in a specific file, sorted by line with parent-child hierarchy. Returns structured JSON with symbol metadata.")]
+    async fn list_document_symbols(
+        &self,
+        Parameters(request): Parameters<ListDocumentSymbolsRequest>,
+    ) -> String {
+        let pool = match self.get_pool().await {
+            Ok(p) => p,
+            Err(e) => return serde_json::json!({
+                "error": {
+                    "code": "database_error",
+                    "message": format!("Failed to connect to database: {e}")
+                }
+            }).to_string(),
+        };
+
+        let project_root = match std::path::Path::new(&request.project_root).canonicalize() {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => return serde_json::json!({
+                "error": {
+                    "code": "invalid_path",
+                    "message": format!("Project root not found: {}", request.project_root)
+                }
+            }).to_string(),
+        };
+
+        if let Err(e) = self.ensure_indexed(&project_root).await {
+            return serde_json::json!({
+                "error": {
+                    "code": "auto_index_failed",
+                    "message": format!("Auto-indexing failed: {e}")
+                }
+            }).to_string();
+        }
+
+        let rows = match document::list_document_symbols(&pool, &project_root, &request.file_path).await {
+            Ok(r) => r,
+            Err(e) => return serde_json::json!({
+                "error": {
+                    "code": "database_error",
+                    "message": format!("Query failed: {e}")
+                }
+            }).to_string(),
+        };
+
+        if rows.is_empty() {
+            return serde_json::json!({
+                "error": {
+                    "code": "file_not_found",
+                    "message": format!("No symbols found for file '{}' in project '{}'. Ensure the file is indexed.", request.file_path, project_root)
+                }
+            }).to_string();
+        }
+
+        // Build hierarchy: convert rows to entries, then nest children
+        let entries: Vec<DocumentSymbolEntry> = rows.into_iter().map(|row| DocumentSymbolEntry {
+            id: row.id,
+            name: row.name,
+            kind: parse_symbol_kind(&row.kind),
+            start_line: row.start_line,
+            end_line: row.end_line,
+            start_col: row.start_col,
+            end_col: row.end_col,
+            signature: row.signature,
+            documentation: row.documentation,
+            children: Vec::new(),
+        }).collect();
+
+        let hierarchical = build_symbol_hierarchy(entries);
+
+        serde_json::to_string(&DocumentSymbolResult {
+            file_path: request.file_path,
+            project_root,
+            language: None,
+            symbols: hierarchical,
+        }).unwrap_or_else(|e| serde_json::json!({
+            "error": {
+                "code": "serialization_error",
+                "message": format!("Failed to serialize result: {e}")
+            }
+        }).to_string())
+    }
+
+    /// Search for text patterns within indexed source files (like grep).
+    ///
+    /// Searches file contents using regex or plain text. Finds TODO comments, raw SQL, security patterns, etc.
+    #[tool(description = "Search for text patterns within indexed source files (regex or plain text). Returns matched lines with surrounding context. Useful for finding TODOs, raw SQL, security patterns, etc.")]
+    async fn search_content(
+        &self,
+        Parameters(request): Parameters<SearchContentRequest>,
+    ) -> String {
+        if request.pattern.trim().is_empty() {
+            return serde_json::json!({
+                "error": {
+                    "code": "invalid_parameters",
+                    "message": "Pattern cannot be empty"
+                }
+            }).to_string();
+        }
+
+        let pool = match self.get_pool().await {
+            Ok(p) => p,
+            Err(e) => return serde_json::json!({
+                "error": {
+                    "code": "database_error",
+                    "message": format!("Failed to connect to database: {e}")
+                }
+            }).to_string(),
+        };
+
+        let project_root = match std::path::Path::new(&request.path).canonicalize() {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => return serde_json::json!({
+                "error": {
+                    "code": "invalid_path",
+                    "message": format!("Project root not found: {}", request.path)
+                }
+            }).to_string(),
+        };
+
+        if let Err(e) = self.ensure_indexed(&project_root).await {
+            return serde_json::json!({
+                "error": {
+                    "code": "auto_index_failed",
+                    "message": format!("Auto-indexing failed: {e}")
+                }
+            }).to_string();
+        }
+
+        let limit = request.limit.unwrap_or(50).min(200) as usize;
+        let ext = request.file_extension.as_deref();
+
+        let matches = match content::search_content(&pool, &project_root, &request.pattern, ext, limit).await {
+            Ok(m) => m,
+            Err(e) => return serde_json::json!({
+                "error": {
+                    "code": "search_error",
+                    "message": format!("Content search failed: {e}")
+                }
+            }).to_string(),
+        };
+
+        let total_count = matches.len() as u32;
+        let has_more = total_count >= limit as u32;
+
+        let entries: Vec<ContentMatchEntry> = matches.into_iter().map(|m| ContentMatchEntry {
+            file_path: m.file_path,
+            project_root: m.project_root,
+            line_number: m.line_number,
+            line_content: m.line_content,
+            context_before: m.context_before,
+            context_after: m.context_after,
+        }).collect();
+
+        serde_json::to_string(&ContentSearchResult {
+            pattern: request.pattern,
+            total_count,
+            has_more,
+            matches: entries,
+        }).unwrap_or_else(|e| serde_json::json!({
+            "error": {
+                "code": "serialization_error",
+                "message": format!("Failed to serialize result: {e}")
+            }
+        }).to_string())
+    }
+
+    /// Find all references to a symbol across the project.
+    ///
+    /// Classifies each reference as import, call, type usage, definition, or other.
+    #[tool(description = "Find all references to a symbol across the project. Classifies references as import, call, type_usage, definition, or other. Returns file locations with line content.")]
+    async fn find_references(
+        &self,
+        Parameters(request): Parameters<FindReferencesRequest>,
+    ) -> String {
+        if request.symbol_name.trim().is_empty() {
+            return serde_json::json!({
+                "error": {
+                    "code": "invalid_parameters",
+                    "message": "Symbol name cannot be empty"
+                }
+            }).to_string();
+        }
+
+        let pool = match self.get_pool().await {
+            Ok(p) => p,
+            Err(e) => return serde_json::json!({
+                "error": {
+                    "code": "database_error",
+                    "message": format!("Failed to connect to database: {e}")
+                }
+            }).to_string(),
+        };
+
+        let project_root = match std::path::Path::new(&request.path).canonicalize() {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => return serde_json::json!({
+                "error": {
+                    "code": "invalid_path",
+                    "message": format!("Project root not found: {}", request.path)
+                }
+            }).to_string(),
+        };
+
+        if let Err(e) = self.ensure_indexed(&project_root).await {
+            return serde_json::json!({
+                "error": {
+                    "code": "auto_index_failed",
+                    "message": format!("Auto-indexing failed: {e}")
+                }
+            }).to_string();
+        }
+
+        let limit = request.limit.unwrap_or(50).min(100) as usize;
+
+        let refs = match references::find_references(
+            &pool,
+            &project_root,
+            &request.symbol_name,
+            request.file_path.as_deref(),
+            limit,
+        ).await {
+            Ok(r) => r,
+            Err(e) => return serde_json::json!({
+                "error": {
+                    "code": "query_error",
+                    "message": format!("Find references failed: {e}")
+                }
+            }).to_string(),
+        };
+
+        let total_count = refs.len() as u32;
+        let has_more = total_count >= limit as u32;
+
+        let entries: Vec<ReferenceMatchEntry> = refs.into_iter().map(|r| ReferenceMatchEntry {
+            file_path: r.file_path,
+            project_root: r.project_root,
+            line_number: r.line_number,
+            line_content: r.line_content,
+            reference_type: match r.reference_type {
+                references::ReferenceType::Import => "import".to_string(),
+                references::ReferenceType::Call => "call".to_string(),
+                references::ReferenceType::TypeUsage => "type_usage".to_string(),
+                references::ReferenceType::Definition => "definition".to_string(),
+                references::ReferenceType::Other => "other".to_string(),
+            },
+        }).collect();
+
+        serde_json::to_string(&FindReferencesResult {
+            symbol_name: request.symbol_name,
+            total_count,
+            has_more,
+            references: entries,
+        }).unwrap_or_else(|e| serde_json::json!({
+            "error": {
+                "code": "serialization_error",
+                "message": format!("Failed to serialize result: {e}")
+            }
+        }).to_string())
+    }
+
+    /// Search for symbols by concept or keyword (semantic search).
+    ///
+    /// Uses full-text search across symbol names, signatures, and documentation.
+    #[tool(description = "Search for symbols by concept or keyword using full-text search. Searches symbol names, signatures, and documentation. E.g., 'rate limiting', 'database connection', 'error handling'.")]
+    async fn search_by_semantic(
+        &self,
+        Parameters(request): Parameters<SearchBySemanticRequest>,
+    ) -> String {
+        if request.query.trim().is_empty() {
+            return serde_json::json!({
+                "error": {
+                    "code": "invalid_parameters",
+                    "message": "Query cannot be empty"
+                }
+            }).to_string();
+        }
+
+        let pool = match self.get_pool().await {
+            Ok(p) => p,
+            Err(e) => return serde_json::json!({
+                "error": {
+                    "code": "database_error",
+                    "message": format!("Failed to connect to database: {e}")
+                }
+            }).to_string(),
+        };
+
+        let project_root = match std::path::Path::new(&request.path).canonicalize() {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => return serde_json::json!({
+                "error": {
+                    "code": "invalid_path",
+                    "message": format!("Project root not found: {}", request.path)
+                }
+            }).to_string(),
+        };
+
+        if let Err(e) = self.ensure_indexed(&project_root).await {
+            return serde_json::json!({
+                "error": {
+                    "code": "auto_index_failed",
+                    "message": format!("Auto-indexing failed: {e}")
+                }
+            }).to_string();
+        }
+
+        let limit = request.limit.unwrap_or(50).min(100) as usize;
+
+        let results = match semantic::search_by_semantic(&pool, &request.query, &project_root, limit).await {
+            Ok(r) => r,
+            Err(e) => return serde_json::json!({
+                "error": {
+                    "code": "query_error",
+                    "message": format!("Semantic search failed: {e}")
+                }
+            }).to_string(),
+        };
+
+        let total_count = match semantic::count_semantic_results(&pool, &request.query, &project_root).await {
+            Ok(c) => c as u32,
+            Err(_) => results.len() as u32,
+        };
+
+        let has_more = (results.len()) < total_count as usize;
+
+        let symbols: Vec<SymbolMatch> = results.into_iter().map(|row| SymbolMatch {
+            id: row.id,
+            name: row.name,
+            kind: parse_symbol_kind(&row.kind),
+            file_path: row.path,
+            project_root: row.project_root,
+            start_line: row.start_line,
+            end_line: row.end_line,
+            signature: row.signature,
+        }).collect();
+
+        serde_json::to_string(&SemanticSearchResult {
+            query: request.query,
+            total_count,
+            has_more,
+            symbols,
+        }).unwrap_or_else(|e| serde_json::json!({
+            "error": {
+                "code": "serialization_error",
+                "message": format!("Failed to serialize result: {e}")
+            }
+        }).to_string())
+    }
+
+    /// Analyze import dependencies for a file.
+    ///
+    /// Shows outgoing imports (what this file imports) and/or incoming imports (what imports this file).
+    #[tool(description = "Analyze import dependencies for a file. Shows outgoing (what this file imports) and incoming (what imports this file) dependencies. Returns structured JSON with import details.")]
+    async fn get_imports(
+        &self,
+        Parameters(request): Parameters<GetImportsRequest>,
+    ) -> String {
+        let pool = match self.get_pool().await {
+            Ok(p) => p,
+            Err(e) => return serde_json::json!({
+                "error": {
+                    "code": "database_error",
+                    "message": format!("Failed to connect to database: {e}")
+                }
+            }).to_string(),
+        };
+
+        let project_root = match std::path::Path::new(&request.project_root).canonicalize() {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => return serde_json::json!({
+                "error": {
+                    "code": "invalid_path",
+                    "message": format!("Project root not found: {}", request.project_root)
+                }
+            }).to_string(),
+        };
+
+        if let Err(e) = self.ensure_indexed(&project_root).await {
+            return serde_json::json!({
+                "error": {
+                    "code": "auto_index_failed",
+                    "message": format!("Auto-indexing failed: {e}")
+                }
+            }).to_string();
+        }
+
+        let direction = request.direction.as_deref().unwrap_or("both");
+
+        let analysis = match imports_query::get_imports(&pool, &project_root, &request.file_path, direction).await {
+            Ok(a) => a,
+            Err(e) => return serde_json::json!({
+                "error": {
+                    "code": "query_error",
+                    "message": format!("Import analysis failed: {e}")
+                }
+            }).to_string(),
+        };
+
+        let outgoing: Vec<ImportEntry> = analysis.outgoing.into_iter().map(|r| ImportEntry {
+            id: r.id,
+            imported_symbol: r.imported_symbol,
+            imported_from_path: r.imported_from_path,
+            import_type: r.import_type,
+            start_line: r.start_line,
+            raw_statement: r.raw_statement,
+            file_path: r.file_path,
+            project_root: r.project_root,
+        }).collect();
+
+        let incoming: Vec<ImportEntry> = analysis.incoming.into_iter().map(|r| ImportEntry {
+            id: r.id,
+            imported_symbol: r.imported_symbol,
+            imported_from_path: r.imported_from_path,
+            import_type: r.import_type,
+            start_line: r.start_line,
+            raw_statement: r.raw_statement,
+            file_path: r.file_path,
+            project_root: r.project_root,
+        }).collect();
+
+        serde_json::to_string(&ImportAnalysisResult {
+            file_path: request.file_path,
+            project_root,
+            outgoing,
+            incoming,
+        }).unwrap_or_else(|e| serde_json::json!({
+            "error": {
+                "code": "serialization_error",
+                "message": format!("Failed to serialize result: {e}")
+            }
+        }).to_string())
+    }
+
     /// List the directory structure of a project.
     ///
     /// Returns a structured list of files and directories with metadata.
     #[tool(description = "List the directory structure of a project. Returns structured JSON list of files and directories with metadata including file types and languages.")]
     async fn list_directory_structure(
         &self,
-        #[tool(aggr)] request: ListDirectoryRequest,
+        Parameters(request): Parameters<ListDirectoryRequest>,
     ) -> String {
         let path = Path::new(&request.path);
         if !path.exists() {
@@ -318,7 +921,7 @@ impl CortexServer {
     #[tool(description = "Index or re-index a project directory. Call this after code changes to refresh the symbol index before searching. Returns structured JSON with indexing statistics.")]
     async fn index_project(
         &self,
-        #[tool(aggr)] request: IndexProjectRequest,
+        Parameters(request): Parameters<IndexProjectRequest>,
     ) -> String {
         let path = Path::new(&request.path);
         if !path.exists() {
@@ -375,12 +978,21 @@ impl CortexServer {
     #[tool(description = "Check if a project is indexed and get its status including file count, symbol count, and last indexed time. Returns structured JSON with project metadata.")]
     async fn get_index_status(
         &self,
-        #[tool(aggr)] request: GetIndexStatusRequest,
+        Parameters(request): Parameters<GetIndexStatusRequest>,
     ) -> String {
         let path = Path::new(&request.path);
         let project_root = path.canonicalize()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| request.path.clone());
+
+        if let Err(e) = self.ensure_indexed(&project_root).await {
+            return serde_json::json!({
+                "error": {
+                    "code": "auto_index_failed",
+                    "message": format!("Auto-indexing failed: {e}")
+                }
+            }).to_string();
+        }
 
         let pool = match self.get_pool().await {
             Ok(p) => p,
@@ -433,7 +1045,7 @@ impl CortexServer {
     #[tool(description = "List files in a project with optional filtering by extension. Returns structured JSON list of file entries with metadata.")]
     async fn list_files(
         &self,
-        #[tool(aggr)] request: ListFilesRequest,
+        Parameters(request): Parameters<ListFilesRequest>,
     ) -> String {
         let path = Path::new(&request.path);
         if !path.exists() {
@@ -480,7 +1092,9 @@ impl CortexServer {
             crate::models::SymbolKind::Struct,
             crate::models::SymbolKind::Impl,
             crate::models::SymbolKind::Trait,
+            crate::models::SymbolKind::Interface,
             crate::models::SymbolKind::Enum,
+            crate::models::SymbolKind::TypeAlias,
             crate::models::SymbolKind::Constant,
             crate::models::SymbolKind::Module,
             crate::models::SymbolKind::Class,
@@ -592,7 +1206,9 @@ fn parse_symbol_kind(kind_str: &str) -> crate::models::SymbolKind {
         "struct" => crate::models::SymbolKind::Struct,
         "impl" => crate::models::SymbolKind::Impl,
         "trait" => crate::models::SymbolKind::Trait,
+        "interface" => crate::models::SymbolKind::Interface,
         "enum" => crate::models::SymbolKind::Enum,
+        "type_alias" => crate::models::SymbolKind::TypeAlias,
         "constant" => crate::models::SymbolKind::Constant,
         "module" => crate::models::SymbolKind::Module,
         "class" => crate::models::SymbolKind::Class,
@@ -601,17 +1217,63 @@ fn parse_symbol_kind(kind_str: &str) -> crate::models::SymbolKind {
     }
 }
 
-#[tool(tool_box)]
+/// Build parent-child hierarchy from a flat list of symbols sorted by start_line.
+/// A symbol B is a child of A if A.start_line <= B.start_line && B.end_line <= A.end_line.
+fn build_symbol_hierarchy(mut entries: Vec<DocumentSymbolEntry>) -> Vec<DocumentSymbolEntry> {
+    if entries.is_empty() {
+        return entries;
+    }
+
+    // Process from end to start so we can move children into parents without
+    // disturbing indices we haven't visited yet.
+    let mut i = entries.len();
+    while i > 0 {
+        i -= 1;
+        let (start, end) = (entries[i].start_line, entries[i].end_line);
+
+        // Collect indices of entries[j] (j > i) that fit within [start, end]
+        let mut child_indices: Vec<usize> = Vec::new();
+        let mut j = i + 1;
+        while j < entries.len() {
+            let cj = entries[j].start_line;
+            let ce = entries[j].end_line;
+            if cj >= start && ce <= end {
+                // Check if already claimed by a closer parent
+                let claimed = child_indices.iter().any(|&ci| {
+                    entries[ci].start_line <= cj && ce <= entries[ci].end_line
+                });
+                if !claimed {
+                    child_indices.push(j);
+                }
+            }
+            j += 1;
+        }
+
+        if !child_indices.is_empty() {
+            // Remove children in reverse index order to preserve positions
+            let mut children: Vec<DocumentSymbolEntry> = Vec::new();
+            for &ci in child_indices.iter().rev() {
+                children.push(entries.remove(ci));
+            }
+            children.reverse();
+            // Recursively build hierarchy for children
+            children = build_symbol_hierarchy(children);
+            entries[i].children = children;
+        }
+    }
+
+    entries
+}
+
+#[tool_handler]
 impl ServerHandler for CortexServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            server_info: Implementation {
-                name: "cortex".into(),
-                version: "0.2.0".into(),
-            },
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            instructions: Some(
-                r#"
+        ServerInfo::new(
+            ServerCapabilities::builder().enable_tools().build(),
+        )
+        .with_server_info(rmcp::model::Implementation::new("cortex", "0.2.0"))
+        .with_instructions(
+            r#"
 Cortex is a local code context engine that indexes source code and exposes it via MCP.
 
 Available tools:
@@ -623,19 +1285,27 @@ Available tools:
 - list_files: List files with optional filtering by extension (returns JSON)
 - list_symbol_kinds: Get available symbol types for filtering (returns JSON)
 - get_symbol_stats: Get overall statistics about the index (returns JSON)
+- list_document_symbols: List all symbols in a file with hierarchy (returns JSON)
+- search_content: Search file contents by regex or text pattern (returns JSON)
+- find_references: Find all references to a symbol across the project (returns JSON)
+- search_by_semantic: Search symbols by concept using full-text search (returns JSON)
+- get_imports: Analyze import dependencies for a file (returns JSON)
 
 Usage pattern:
 1. Use index_project to index your codebase (first time or after changes)
-2. Use search_symbols to find relevant symbols
-3. Use get_code_context to read full implementations
-4. Use list_directory_structure or list_files to explore project structure
+2. Use get_index_status to check if a project is indexed
+3. Use search_symbols to find symbols by name, or search_by_semantic to find by concept/keyword
+4. Use get_code_context to read full source code for a symbol
+5. Use list_document_symbols to see all symbols in a file with hierarchy
+6. Use find_references to find all usages of a symbol across the project
+7. Use get_imports to analyze import dependencies (outgoing/incoming) for a file
+8. Use search_content to grep for text patterns (TODOs, raw SQL, security patterns)
+9. Use list_directory_structure or list_files to explore project structure
+10. Use list_symbol_kinds to get available symbol type filters, get_symbol_stats for index statistics
 
 Note: All tools return structured JSON that can be parsed programmatically.
-"#
-                .into(),
-            ),
-            ..Default::default()
-        }
+"#,
+        )
     }
 }
 

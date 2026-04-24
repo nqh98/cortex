@@ -1,5 +1,5 @@
-use crate::models::{Language, Symbol, SymbolKind};
-use crate::parser::Parser;
+use crate::models::{Import, ImportType, Language, Symbol, SymbolKind};
+use crate::parser::{ParseResult, Parser};
 use std::path::Path;
 
 pub struct TsParser;
@@ -9,7 +9,7 @@ impl Parser for TsParser {
         Language::TypeScript
     }
 
-    fn parse(&self, content: &str, path: &Path) -> Vec<Symbol> {
+    fn parse(&self, content: &str, path: &Path) -> ParseResult {
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())
@@ -21,8 +21,10 @@ impl Parser for TsParser {
 
         let root = tree.root_node();
         let mut symbols = Vec::new();
+        let mut imports = Vec::new();
         extract_ts_symbols(&root, content, &mut symbols);
-        symbols
+        extract_ts_imports(&root, content, &mut imports);
+        ParseResult { symbols, imports }
     }
 }
 
@@ -46,13 +48,13 @@ fn extract_ts_symbols(
             return;
         }
         "interface_declaration" => {
-            if let Some(sym) = extract_named_symbol(node, source, SymbolKind::Trait, "interface") {
+            if let Some(sym) = extract_named_symbol(node, source, SymbolKind::Interface, "interface") {
                 symbols.push(sym);
             }
             return;
         }
         "type_alias_declaration" => {
-            if let Some(sym) = extract_named_symbol(node, source, SymbolKind::Struct, "type") {
+            if let Some(sym) = extract_named_symbol(node, source, SymbolKind::TypeAlias, "type") {
                 symbols.push(sym);
             }
             return;
@@ -249,4 +251,110 @@ fn find_child_by_kind<'a>(node: &'a tree_sitter::Node, kind: &str) -> Option<tre
         }
     }
     None
+}
+
+fn extract_ts_imports(
+    node: &tree_sitter::Node,
+    source: &str,
+    imports: &mut Vec<Import>,
+) {
+    match node.kind() {
+        "import_statement" => {
+            let line = node.start_position().row + 1;
+            let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("").to_string();
+
+            // Find the source path (string literal)
+            let mut from_path = None;
+            let mut symbols_list = Vec::new();
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                match child.kind() {
+                    "string" | "template_string" => {
+                        let text = child.utf8_text(source.as_bytes()).ok().unwrap_or("");
+                        from_path = Some(text.trim_matches(|c| c == '\'' || c == '"' || c == '`').to_string());
+                    }
+                    "named_imports" => {
+                        let mut ic = child.walk();
+                        for cc in child.children(&mut ic) {
+                            if cc.kind() == "import_specifier" {
+                                if let Some(name) = cc.child_by_field_name("name") {
+                                    if let Some(t) = name.utf8_text(source.as_bytes()).ok() {
+                                        symbols_list.push(t.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "identifier" => {
+                        if let Some(t) = child.utf8_text(source.as_bytes()).ok() {
+                            symbols_list.push(t.to_string());
+                        }
+                    }
+                    "namespace_import" => {
+                        if let Some(name) = child.child_by_field_name("name") {
+                            if let Some(t) = name.utf8_text(source.as_bytes()).ok() {
+                                symbols_list.push(format!("* as {t}"));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let import_symbol = if symbols_list.is_empty() {
+                from_path.clone().unwrap_or_default()
+            } else {
+                symbols_list.join(", ")
+            };
+
+            imports.push(Import {
+                imported_symbol: import_symbol,
+                imported_from_path: from_path,
+                import_type: ImportType::Import,
+                start_line: Some(line),
+                raw_statement: Some(raw),
+            });
+            return;
+        }
+        // Handle `const x = require('y')` pattern
+        "call_expression" => {
+            let func = node.child_by_field_name("function");
+            if let Some(f) = func {
+                if let Some(name) = f.utf8_text(source.as_bytes()).ok() {
+                    if name == "require" {
+                        let line = node.start_position().row + 1;
+                        let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("").to_string();
+                        let args = node.child_by_field_name("arguments");
+                        let from_path = args.and_then(|a| {
+                            a.children(&mut a.walk())
+                                .filter_map(|c| {
+                                    if c.kind() == "string" {
+                                        c.utf8_text(source.as_bytes()).ok().map(|s| {
+                                            s.trim_matches(|ch| ch == '\'' || ch == '"').to_string()
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .next()
+                        });
+
+                        imports.push(Import {
+                            imported_symbol: from_path.clone().unwrap_or_default(),
+                            imported_from_path: from_path,
+                            import_type: ImportType::Require,
+                            start_line: Some(line),
+                            raw_statement: Some(raw),
+                        });
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        extract_ts_imports(&child, source, imports);
+    }
 }

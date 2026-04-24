@@ -49,6 +49,30 @@ async fn run_migrations(pool: &DbPool) -> crate::error::Result<()> {
             .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
     }
 
+    // Migrate TS interface/type_alias kinds: rename 'trait' -> 'interface' and 'struct' -> 'type_alias'
+    // for TypeScript/JavaScript files only (Rust traits and structs keep their original kinds)
+    sqlx::raw_sql(
+        "UPDATE symbols SET kind = 'interface' WHERE kind = 'trait' AND file_id IN (SELECT id FROM files WHERE language IN ('typescript', 'javascript'))"
+    ).execute(pool).await.map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    sqlx::raw_sql(
+        "UPDATE symbols SET kind = 'type_alias' WHERE kind = 'struct' AND file_id IN (SELECT id FROM files WHERE language IN ('typescript', 'javascript')) AND name IN (SELECT s.name FROM symbols s JOIN files f ON s.file_id = f.id WHERE f.language IN ('typescript', 'javascript') AND s.kind = 'struct' AND s.signature LIKE 'type %')"
+    ).execute(pool).await.map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    // FTS5 full-text search index
+    let migration_fts = include_str!("../../migrations/002_add_fts.sql");
+    sqlx::raw_sql(migration_fts)
+        .execute(pool)
+        .await
+        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    // Imports table for dependency analysis
+    let migration_imports = include_str!("../../migrations/003_add_imports.sql");
+    sqlx::raw_sql(migration_imports)
+        .execute(pool)
+        .await
+        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
     Ok(())
 }
 
@@ -307,4 +331,92 @@ pub async fn get_symbols_by_language(
     }
 
     Ok(result)
+}
+
+/// Insert imports for a file, replacing any existing ones
+pub async fn insert_imports(
+    pool: &DbPool,
+    file_id: i64,
+    imports: &[crate::models::Import],
+) -> crate::error::Result<()> {
+    sqlx::query("DELETE FROM imports WHERE file_id = ?")
+        .bind(file_id)
+        .execute(pool)
+        .await
+        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    for imp in imports {
+        sqlx::query(
+            "INSERT INTO imports (file_id, imported_symbol, imported_from_path, import_type, start_line, raw_statement)
+             VALUES (?, ?, ?, ?, ?, ?)"
+        )
+        .bind(file_id)
+        .bind(&imp.imported_symbol)
+        .bind(&imp.imported_from_path)
+        .bind(imp.import_type.as_str())
+        .bind(imp.start_line.map(|l| l as i64))
+        .bind(&imp.raw_statement)
+        .execute(pool)
+        .await
+        .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct ImportRow {
+    pub id: i64,
+    pub file_id: i64,
+    pub imported_symbol: String,
+    pub imported_from_path: Option<String>,
+    pub import_type: String,
+    pub start_line: Option<i64>,
+    pub raw_statement: Option<String>,
+    pub file_path: String,
+    pub project_root: String,
+}
+
+pub async fn get_outgoing_imports(
+    pool: &DbPool,
+    project_root: &str,
+    file_path: &str,
+) -> crate::error::Result<Vec<ImportRow>> {
+    sqlx::query_as::<_, ImportRow>(
+        "SELECT i.id, i.file_id, i.imported_symbol, i.imported_from_path, i.import_type, i.start_line, i.raw_statement, f.path as file_path, f.project_root
+         FROM imports i JOIN files f ON i.file_id = f.id
+         WHERE f.project_root = ? AND f.path = ?
+         ORDER BY i.start_line",
+    )
+    .bind(project_root)
+    .bind(file_path)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| crate::error::CortexError::Database(e.to_string()))
+}
+
+pub async fn get_incoming_imports(
+    pool: &DbPool,
+    project_root: &str,
+    file_path: &str,
+) -> crate::error::Result<Vec<ImportRow>> {
+    let module_name = std::path::Path::new(file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(file_path)
+        .to_string();
+
+    sqlx::query_as::<_, ImportRow>(
+        "SELECT i.id, i.file_id, i.imported_symbol, i.imported_from_path, i.import_type, i.start_line, i.raw_statement, f.path as file_path, f.project_root
+         FROM imports i JOIN files f ON i.file_id = f.id
+         WHERE f.project_root = ?
+         AND (i.imported_from_path LIKE ? OR i.imported_symbol LIKE ?)
+         ORDER BY f.path, i.start_line",
+    )
+    .bind(project_root)
+    .bind(format!("%{module_name}%"))
+    .bind(format!("%{module_name}%"))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| crate::error::CortexError::Database(e.to_string()))
 }

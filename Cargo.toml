@@ -54,13 +54,14 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
 # MCP
-rmcp = { version = "0.1", features = ["transport-io"] }
-schemars = "0.8"
+rmcp = { version = "1", features = ["transport-io"] }
+schemars = "1"
 
 # Utilities
 sha2 = "0.10"
 hex = "0.4"
 serde_json = "1"
+regex = "1"
 
 [dev-dependencies]
 tempfile = "3"

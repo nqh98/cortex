@@ -37,7 +37,11 @@ pub enum SymbolKind {
     Struct,
     Impl,
     Trait,
+    #[serde(rename = "interface")]
+    Interface,
     Enum,
+    #[serde(rename = "type_alias")]
+    TypeAlias,
     Constant,
     Module,
     Class,
@@ -51,7 +55,9 @@ impl SymbolKind {
             Self::Struct => "struct",
             Self::Impl => "impl",
             Self::Trait => "trait",
+            Self::Interface => "interface",
             Self::Enum => "enum",
+            Self::TypeAlias => "type_alias",
             Self::Constant => "constant",
             Self::Module => "module",
             Self::Class => "class",
