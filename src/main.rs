@@ -66,7 +66,13 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> cortex::error::Result<()> {
-    let config = Config::load(Path::new("config.toml"))?;
+    let config_path = Config::default_config_path();
+    let config = Config::load(&config_path)?;
+
+    // Auto-save default config if it doesn't exist
+    if !config_path.exists() {
+        Config::default().save(&config_path)?;
+    }
 
     match cli.command {
         Commands::Index { path } => {

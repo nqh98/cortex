@@ -115,7 +115,7 @@ path = "$repo_dir/db.sqlite"
 
 [indexing]
 max_file_size_kb = 1024
-supported_extensions = ["rs", "py", "js", "ts"]
+supported_extensions = ["rs", "py", "js", "ts", "tsx", "jsx"]
 
 [embeddings]
 enabled = false
@@ -126,6 +126,31 @@ batch_size = 32
 debounce_ms = 500
 EOF
     echo "$TEMP_CONFIG_DIR/config.toml"
+}
+
+# Create config file in project's .cortex directory
+create_project_config() {
+    local project_path="$1"
+    local repo_dir="$2"
+    local cortex_dir="$project_path/.cortex"
+    mkdir -p "$cortex_dir"
+
+    cat > "$cortex_dir/config.toml" <<EOF
+[database]
+path = "$repo_dir/db.sqlite"
+
+[indexing]
+max_file_size_kb = 1024
+supported_extensions = ["rs", "py", "js", "ts", "tsx", "jsx"]
+
+[embeddings]
+enabled = false
+model = "AllMiniLML6V2"
+batch_size = 32
+
+[watcher]
+debounce_ms = 500
+EOF
 }
 
 # Run command in repo context
@@ -194,17 +219,15 @@ run_cortex() {
     repo_dir="$(get_repo_dir)"
 
     # Ensure repo directory exists with correct permissions
-    # Note: $CORTEX_DIR is the mount point, so we create relative to it
     docker run --rm -v "$DATA_VOLUME:$CORTEX_DIR" alpine sh -c "mkdir -p '$repo_dir' && chown -R 1000:1000 '$repo_dir'"
 
-    # Generate repo-specific config
-    local config_file
-    config_file="$(generate_repo_config "$repo_dir")"
+    # Create config file in project's .cortex directory
+    create_project_config "$PROJECT_PATH" "$repo_dir"
 
     docker run --rm \
         -v "$PROJECT_PATH:/project" \
         -v "$DATA_VOLUME:$CORTEX_DIR" \
-        -v "$config_file:/project/config.toml:ro" \
+        -w "/project" \
         "$IMAGE_NAME" "$cmd" "$@"
 }
 
@@ -420,7 +443,29 @@ case "${1:-help}" in
         run_cortex context "${@:2}"
         ;;
     serve)
-        run_cortex serve
+        check_docker
+        ensure_volume
+
+        repo_dir="$(get_repo_dir)"
+        docker run --rm -v "$DATA_VOLUME:$CORTEX_DIR" alpine sh -c "mkdir -p '$repo_dir'"
+
+        # Get the current repo's project path
+        local serve_project_path
+        serve_project_path="$(get_repo_path "${REPO_NAME:-$(get_current_repo)}")"
+        if [[ -z "$serve_project_path" ]]; then
+            log_error "No project path found for repository. Use 'index' command first."
+            exit 1
+        fi
+
+        # Create config file in project's .cortex directory
+        create_project_config "$serve_project_path" "$repo_dir"
+
+        # Run with -i flag to keep stdin open
+        exec docker run --rm -i \
+            -v "$DATA_VOLUME:$CORTEX_DIR" \
+            -v "$serve_project_path:/project" \
+            -w "/project" \
+            "$IMAGE_NAME" serve
         ;;
     watch)
         watch_path="${2:-.}"
@@ -451,13 +496,12 @@ case "${1:-help}" in
         check_docker
         ensure_volume
         shell_repo_dir="$(get_repo_dir "$REPO_NAME")"
-        shell_config_file="$(generate_repo_config "$shell_repo_dir")"
         log_info "Opening shell in Cortex container..."
         log_info "Repository: ${REPO_NAME:-$(get_current_repo)}"
         docker run --rm -it \
             -v "$PROJECT_PATH:/project" \
             -v "$DATA_VOLUME:$CORTEX_DIR" \
-            -v "$shell_config_file:/project/config.toml:ro" \
+            -w "/project" \
             --entrypoint /bin/bash \
             "$IMAGE_NAME"
         ;;

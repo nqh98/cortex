@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -45,6 +45,8 @@ impl Default for Config {
                     "py".to_string(),
                     "js".to_string(),
                     "ts".to_string(),
+                    "tsx".to_string(),
+                    "jsx".to_string(),
                 ],
             },
             embeddings: EmbeddingConfig {
@@ -60,13 +62,45 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn default_config_path() -> PathBuf {
+        Path::new(".cortex").join("config.toml")
+    }
+
     pub fn load(path: &Path) -> crate::error::Result<Self> {
-        if !path.exists() {
-            return Ok(Self::default());
+        // Try the provided path first
+        if path.exists() {
+            let content = std::fs::read_to_string(path)
+                .map_err(|e| crate::error::CortexError::Config(e.to_string()))?;
+            return toml::from_str(&content)
+                .map_err(|e| crate::error::CortexError::Config(e.to_string()));
         }
-        let content = std::fs::read_to_string(path)
+
+        // Fallback to .cortex/config.toml
+        let default_path = Self::default_config_path();
+        if default_path.exists() {
+            let content = std::fs::read_to_string(&default_path)
+                .map_err(|e| crate::error::CortexError::Config(e.to_string()))?;
+            return toml::from_str(&content)
+                .map_err(|e| crate::error::CortexError::Config(e.to_string()));
+        }
+
+        // No config found, return defaults
+        Ok(Self::default())
+    }
+
+    pub fn save(&self, path: &Path) -> crate::error::Result<()> {
+        let content = toml::to_string_pretty(self)
             .map_err(|e| crate::error::CortexError::Config(e.to_string()))?;
-        toml::from_str(&content)
-            .map_err(|e| crate::error::CortexError::Config(e.to_string()))
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| crate::error::CortexError::Config(e.to_string()))?;
+        }
+
+        std::fs::write(path, content)
+            .map_err(|e| crate::error::CortexError::Config(e.to_string()))?;
+
+        Ok(())
     }
 }
