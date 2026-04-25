@@ -2133,7 +2133,7 @@ impl ServerHandler for CortexServer {
         ServerInfo::new(
             ServerCapabilities::builder().enable_tools().build(),
         )
-        .with_server_info(rmcp::model::Implementation::new("cortex", "0.2.0"))
+        .with_server_info(rmcp::model::Implementation::new("cortex", env!("CARGO_PKG_VERSION")))
         .with_instructions(
             r#"
 Cortex is a local code context engine that indexes source code and exposes it via MCP.
