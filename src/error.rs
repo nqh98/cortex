@@ -34,6 +34,9 @@ pub enum CortexError {
 
     #[error("Symbol not found: {0}")]
     SymbolNotFound(String),
+
+    #[error("{0}")]
+    Update(String),
 }
 
 pub type Result<T> = std::result::Result<T, CortexError>;

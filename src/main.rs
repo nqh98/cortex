@@ -59,6 +59,8 @@ enum Commands {
         /// Project name (substring match) or "all" to remove all indexes
         name: String,
     },
+    /// Update cortex to the latest version
+    Update,
 }
 
 #[tokio::main]
@@ -283,6 +285,11 @@ async fn run(cli: Cli) -> cortex::error::Result<()> {
                     println!("Matched {} projects", matches.len());
                 }
             }
+        }
+        Commands::Update => {
+            cortex::update::perform_update()
+                .await
+                .map_err(|e| cortex::error::CortexError::Update(e))?;
         }
     }
 

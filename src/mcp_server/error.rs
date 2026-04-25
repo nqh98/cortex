@@ -75,6 +75,7 @@ impl From<crate::error::CortexError> for McpError {
             CortexError::Mcp(msg) => (ErrorCode::InternalError, msg),
             CortexError::Watcher(msg) => (ErrorCode::InternalError, msg),
             CortexError::Embedding(msg) => (ErrorCode::InternalError, msg),
+            CortexError::Update(msg) => (ErrorCode::InternalError, msg),
         };
 
         Self::new(code, message)

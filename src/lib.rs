@@ -7,6 +7,7 @@ pub mod parser;
 pub mod query;
 pub mod report;
 pub mod scanner;
+pub mod update;
 pub mod watcher;
 
 #[cfg(feature = "embeddings")]
