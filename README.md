@@ -60,9 +60,23 @@ Everything runs **locally** — no cloud services, no API keys, no data leaves y
 
 ## Installation
 
-### Option A: Download a release binary (recommended, no Rust needed)
+### Option A: One-liner install (recommended)
 
-1. Download the latest binary for your platform from [Releases](https://github.com/nqh98/cortex/releases):
+No clone needed — downloads the latest release binary and configures everything:
+
+```bash
+# Global — available for all projects (binary: ~/.local/bin/cortex)
+curl -fsSL https://raw.githubusercontent.com/nqh98/cortex/main/install.sh | bash
+
+# Local — scoped to a single project (binary: <project>/.cortex/bin/cortex)
+curl -fsSL https://raw.githubusercontent.com/nqh98/cortex/main/install.sh | bash -s local /path/to/your/project
+```
+
+This sets up the binary, MCP config, CLAUDE.md preferences, and the `/cortex-task` slash command.
+
+### Option B: Download binary manually
+
+Download from [Releases](https://github.com/nqh98/cortex/releases) and place it in your PATH:
 
 ```bash
 # Linux (x86_64)
@@ -78,43 +92,32 @@ curl -fsSL https://github.com/nqh98/cortex/releases/latest/download/cortex-macos
 sudo mv cortex /usr/local/bin/
 ```
 
-2. Verify it works:
+Then manually add to your MCP config (see [Quick Start](#quick-start)).
 
-```bash
-cortex --help
-```
-
-3. Connect to your AI assistant. Add to your MCP config (e.g. `~/.claude/claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "cortex": {
-      "command": "cortex",
-      "args": ["serve"]
-    }
-  }
-}
-```
-
-4. Restart your AI tool. Cortex auto-indexes your project on first query.
-
-### Option B: Install script (auto-downloads or builds from source)
-
-Clone and run the installer:
+### Option C: Clone and install
 
 ```bash
 git clone https://github.com/nqh98/cortex.git
 cd cortex
 
-# Global install — binary goes to ~/.local/bin/cortex
+# Global — binary goes to ~/.local/bin/cortex
 ./install.sh
 
-# Local install — everything stays inside your project
+# Local — everything stays inside your project
 ./install.sh local /path/to/your/project
 ```
 
-The installer auto-detects the best source: prebuilt binary first, falls back to building from source if download fails.
+The installer auto-detects: prebuilt binary first, falls back to source build.
+
+### Install script options
+
+```bash
+./install.sh --version v0.2.2                  # Specific version
+./install.sh --url https://example.com/cortex   # Custom binary URL
+./install.sh --build                            # Force source build
+```
+
+### Global vs Local
 
 | | Global | Local |
 |---|---|---|
@@ -123,21 +126,13 @@ The installer auto-detects the best source: prebuilt binary first, falls back to
 | **Index** | `<project>/.cortex/index.sqlite` | `<project>/.cortex/index.sqlite` |
 | **MCP config** | `~/.claude/settings.json` | `<project>/.claude/settings.local.json` |
 | **CLAUDE.md** | `~/.claude/CLAUDE.md` | `<project>/CLAUDE.md` |
+| **Skill** | `~/.claude/commands/cortex-task.md` | `<project>/.claude/commands/cortex-task.md` |
 | **Scope** | All projects | Single project |
-| **Uninstall** | Remove binary + `~/.cortex` | `rm -rf .cortex CLAUDE.md` |
-
-Install script options:
-
-```bash
-./install.sh --version v0.2.1                  # Specific version
-./install.sh --url https://example.com/cortex   # Custom binary URL
-./install.sh --build                            # Force source build
-```
+| **Uninstall** | Remove binary + `~/.cortex` | `rm -rf .cortex CLAUDE.md .claude/commands/cortex-task.md` |
 
 ### Prerequisites
 
-- **Download only**: `curl` (pre-installed on most systems)
-- **Install script**: `curl` or `wget`, plus `jq`
+- **One-liner / download**: `curl` (pre-installed on most systems), `jq`
 - **Source build**: [Rust](https://rustup.rs/) (latest stable), plus `jq`
 
 ## Quick Start
