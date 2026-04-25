@@ -247,7 +247,9 @@ fn find_child_by_kind<'a>(
     kind: &str,
 ) -> Option<tree_sitter::Node<'a>> {
     let mut cursor = node.walk();
-    let result = node.children(&mut cursor).find(|child| child.kind() == kind);
+    let result = node
+        .children(&mut cursor)
+        .find(|child| child.kind() == kind);
     result
 }
 

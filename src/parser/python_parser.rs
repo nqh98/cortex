@@ -201,13 +201,12 @@ fn extract_python_imports(node: &tree_sitter::Node, source: &str, imports: &mut 
 
             for child in &children {
                 match child.kind() {
-                    "dotted_name" | "relative_import"
-                        if module_path.is_none() => {
-                            module_path = child
-                                .utf8_text(source.as_bytes())
-                                .ok()
-                                .map(|s| s.to_string());
-                        }
+                    "dotted_name" | "relative_import" if module_path.is_none() => {
+                        module_path = child
+                            .utf8_text(source.as_bytes())
+                            .ok()
+                            .map(|s| s.to_string());
+                    }
                     "identifier" => {
                         if let Ok(t) = child.utf8_text(source.as_bytes()) {
                             symbol_names.push(t.to_string());

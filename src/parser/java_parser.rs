@@ -357,10 +357,7 @@ fn extract_java_constant(node: &tree_sitter::Node, source: &str) -> Option<Symbo
 fn extract_java_imports(node: &tree_sitter::Node, source: &str, imports: &mut Vec<Import>) {
     if node.kind() == "import_declaration" {
         let line = node.start_position().row + 1;
-        let raw = node
-            .utf8_text(source.as_bytes())
-            .unwrap_or("")
-            .to_string();
+        let raw = node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
 
         // Extract the scoped_identifier or scoped_type_identifier which is the import path
         let mut cursor = node.walk();
@@ -378,13 +375,12 @@ fn extract_java_imports(node: &tree_sitter::Node, source: &str, imports: &mut Ve
                 "asterisk" => {
                     is_wildcard = true;
                 }
-                "identifier" | "type_identifier"
-                    if from_path.is_none() => {
-                        from_path = child
-                            .utf8_text(source.as_bytes())
-                            .ok()
-                            .map(|s| s.to_string());
-                    }
+                "identifier" | "type_identifier" if from_path.is_none() => {
+                    from_path = child
+                        .utf8_text(source.as_bytes())
+                        .ok()
+                        .map(|s| s.to_string());
+                }
                 _ => {}
             }
         }
@@ -420,7 +416,9 @@ fn find_child_by_kind<'a>(
     kind: &str,
 ) -> Option<tree_sitter::Node<'a>> {
     let mut cursor = node.walk();
-    let result = node.children(&mut cursor).find(|child| child.kind() == kind);
+    let result = node
+        .children(&mut cursor)
+        .find(|child| child.kind() == kind);
     result
 }
 

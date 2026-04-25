@@ -139,6 +139,5 @@ pub fn load_registered_projects() -> crate::error::Result<Vec<String>> {
     }
     let content = std::fs::read_to_string(&path)
         .map_err(|e| crate::error::CortexError::Config(e.to_string()))?;
-    serde_json::from_str(&content)
-        .map_err(|e| crate::error::CortexError::Config(e.to_string()))
+    serde_json::from_str(&content).map_err(|e| crate::error::CortexError::Config(e.to_string()))
 }
