@@ -242,6 +242,19 @@ pub struct DirectoryListing {
     pub directory_count: usize,
 }
 
+/// Structured file listing
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FileListResult {
+    /// Path to the project directory
+    pub path: String,
+    /// Matching file entries
+    pub files: Vec<FileEntry>,
+    /// Total files found
+    pub total_count: usize,
+    /// Whether more results are available
+    pub has_more: bool,
+}
+
 /// Index status for a project
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct IndexStatus {

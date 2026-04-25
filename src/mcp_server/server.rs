@@ -878,12 +878,32 @@ impl CortexServer {
             };
 
         if rows.is_empty() {
-            return serde_json::json!({
-                "error": {
-                    "code": "file_not_found",
-                    "message": format!("No symbols found for file '{}' in project '{}'. Ensure the file is indexed.", request.file_path, project_root)
-                }
-            }).to_string();
+            // Check if the file actually exists on disk
+            let abs = std::path::Path::new(&project_root).join(&request.file_path);
+            if !abs.exists() {
+                return serde_json::json!({
+                    "error": {
+                        "code": "file_not_found",
+                        "message": format!("File '{}' not found in project '{}'.", request.file_path, project_root)
+                    }
+                }).to_string();
+            }
+            // File exists but has no indexable symbols (e.g., barrel files, empty files)
+            return serde_json::to_string(&DocumentSymbolResult {
+                file_path: request.file_path,
+                project_root,
+                language: None,
+                symbols: Vec::new(),
+            })
+            .unwrap_or_else(|e| {
+                serde_json::json!({
+                    "error": {
+                        "code": "serialization_error",
+                        "message": format!("Failed to serialize result: {e}")
+                    }
+                })
+                .to_string()
+            });
         }
 
         // Build hierarchy: convert rows to entries, then nest children
@@ -1887,7 +1907,16 @@ impl CortexServer {
                 }
             };
 
-        serde_json::to_string(&entries).unwrap_or_else(|e| {
+        let total_count = entries.len();
+        let has_more = total_count >= limit;
+
+        serde_json::to_string(&crate::mcp_server::models::FileListResult {
+            path: request.path,
+            files: entries,
+            total_count,
+            has_more,
+        })
+        .unwrap_or_else(|e| {
             serde_json::json!({
                 "error": {
                     "code": "serialization_error",

@@ -55,10 +55,14 @@ pub async fn search_content(
         let re = match regex::Regex::new(&pattern_owned) {
             Ok(re) => re,
             Err(_) => {
-                // Fall back to literal substring search
-                match regex::Regex::new(&regex::escape(&pattern_owned)) {
+                // Fall back to literal search with word boundaries
+                let escaped = regex::escape(&pattern_owned);
+                match regex::Regex::new(&format!(r"\b{escaped}\b")) {
                     Ok(re) => re,
-                    Err(_) => return Vec::new(),
+                    Err(_) => match regex::Regex::new(&escaped) {
+                        Ok(re) => re,
+                        Err(_) => return Vec::new(),
+                    },
                 }
             }
         };
