@@ -1,5 +1,5 @@
 <h1 align="center">
-<img src="https://img.shields.io/badge/Cortex-v0.2.1-blue" alt="Cortex" />
+<img src="https://img.shields.io/badge/Cortex-v0.2.5-blue" alt="Cortex" />
 <br />
 Cortex — Local Code Context Engine for AI Assistants
 </h1>
@@ -169,6 +169,7 @@ cortex context get_parser -p ./my-project  # Get symbol source
 cortex watch ./my-project                  # Auto-reindex on file changes
 cortex list                                # List indexed projects
 cortex reset /path/to/project              # Clear a project's index
+cortex update                              # Update to latest version
 ```
 
 ## MCP Tools
@@ -245,7 +246,7 @@ Source Files ──▶ Tree-sitter Parser ──▶ SQLite Index ──▶ MCP S
 
 ```
 src/
-├── main.rs           CLI entry point (index, search, list, clean, serve, watch)
+├── main.rs           CLI entry point (index, search, list, clean, serve, watch, update)
 ├── config.rs         TOML configuration + per-project path resolution
 ├── error.rs          Error types
 ├── models/           Symbol, Import, Language, SymbolKind
@@ -253,6 +254,7 @@ src/
 ├── parser/           Tree-sitter parsers (Rust, Python, JS, TS, Java)
 ├── indexer/          SQLite storage, migrations, indexing pipeline
 ├── query/            Search, context, references, content, semantic, imports
+├── update.rs         Self-update from GitHub releases
 ├── watcher/          File change detection via notify
 └── mcp_server/       MCP tool server with 13 tools
 ```
