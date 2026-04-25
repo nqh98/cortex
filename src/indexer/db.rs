@@ -212,7 +212,7 @@ pub fn split_identifier(name: &str) -> String {
 pub async fn search_symbols(pool: &DbPool, query: &str) -> crate::error::Result<Vec<SymbolRow>> {
     let pattern = format!("%{query}%");
     let rows = sqlx::query_as::<_, SymbolRow>(
-        "SELECT s.id, f.project_root, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature
+        "SELECT s.id, f.project_root, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature, f.language
          FROM symbols s JOIN files f ON s.file_id = f.id
          WHERE s.name LIKE ?1
          ORDER BY s.name
@@ -236,6 +236,7 @@ pub struct SymbolRow {
     pub start_line: i64,
     pub end_line: i64,
     pub signature: Option<String>,
+    pub language: String,
 }
 
 impl SymbolRow {

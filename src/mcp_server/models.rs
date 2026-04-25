@@ -27,6 +27,8 @@ pub struct SynthesizeReportsResult {
     pub date_range: Option<DateRangeResult>,
     /// Count of reports by task type
     pub task_type_breakdown: HashMap<String, u32>,
+    /// Count of reports by AI model
+    pub model_breakdown: HashMap<String, u32>,
     /// Files that appear most frequently across reports
     pub frequently_modified_files: Vec<FileFrequencyResult>,
     /// Issues found across multiple reports, sorted by frequency
@@ -69,9 +71,9 @@ pub struct ToolUsageResult {
     pub count: u32,
 }
 
-/// Semantic search result
+/// Keyword search result
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct SemanticSearchResult {
+pub struct KeywordSearchResult {
     /// Query used for the search
     pub query: String,
     /// Total matching symbols found
@@ -170,6 +172,8 @@ pub struct SymbolMatch {
     pub end_line: i64,
     /// Function/method signature
     pub signature: Option<String>,
+    /// Programming language of the file containing this symbol
+    pub language: String,
 }
 
 /// Structured code context result

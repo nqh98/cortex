@@ -1,4 +1,4 @@
-.PHONY: build test check fmt clippy clean install run-index run-search run-serve run-watch help
+.PHONY: build test check fmt clippy clean install sync-templates run-index run-search run-serve run-watch help
 
 build:
 	cargo build --release
@@ -26,6 +26,11 @@ ci: check test lint
 install:
 	./install.sh
 
+sync-templates:
+	@echo "Syncing embedded templates in install.sh from templates/..."
+	./scripts/sync-templates.sh
+	@echo "Done. Commit the changes to install.sh."
+
 # Development helpers
 run-index:
 	cargo run -- index .
@@ -52,6 +57,7 @@ help:
 	@echo ""
 	@echo "Installation:"
 	@echo "  make install        Build and install to ~/.local/bin"
+	@echo "  make sync-templates Update install.sh embedded templates from templates/"
 	@echo ""
 	@echo "Development:"
 	@echo "  make run-index      Index current directory"

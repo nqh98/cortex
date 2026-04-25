@@ -2,6 +2,20 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Load a template file from templates/ directory.
+# Returns content via stdout if the file exists, exits 1 otherwise.
+# Used to avoid hardcoding templates when running from a cloned repo.
+load_template() {
+    local name="$1"
+    local file_path="$SCRIPT_DIR/templates/${name}"
+    if [[ -f "$file_path" ]]; then
+        cat "$file_path"
+    else
+        return 1
+    fi
+}
+
 MODE="global"
 INSTALL_DIR=""
 TARGET_DIR=""
@@ -328,35 +342,47 @@ fi
 # ── Step 5: Install Cortex tool preferences (CLAUDE.md) ────────────────
 log_step "Installing Cortex tool preferences..."
 
-CORTEX_PREFS='# Cortex MCP Tools (MANDATORY)
+if ! CORTEX_PREFS="$(load_template claude-md.md)"; then
+    # Fallback: embedded copy for curl-piped installs (no templates/ on disk).
+    # Keep in sync with templates/claude-md.md — run: make sync-templates
+    CORTEX_PREFS='# Cortex MCP Tools (MANDATORY)
 
-You MUST use Cortex tools instead of Bash grep/find/rg for ALL code exploration. Do NOT fall back to Bash for searches when a Cortex tool can do the job.
+You should **prefer using Cortex tools** instead of Bash (`grep`, `rg`, `find`, etc.) for code exploration whenever possible.
 
-## Mandatory tool mapping — ALWAYS use Cortex instead of:
+### Tool Mapping
 
-| Instead of this (Bash) | ALWAYS use this (Cortex) |
-|---|---|
-| `grep -rn "pattern"` / `rg "pattern"` | `search_content` with the same pattern |
-| `grep -rn "fn foo"` / searching for a symbol | `search_symbols` by name |
-| Searching for a concept like "error handling" | `search_by_semantic` with the concept |
-| Reading a function/class body | `get_code_context` with the symbol name |
-| `grep -rn "import Foo"` / finding usages | `find_references` for the symbol |
-| Reading a file to see its structure | `list_document_symbols` for that file |
-| `find . -name "*.rs"` / exploring layout | `list_files` or `list_directory_structure` |
-| Understanding what imports what | `get_imports` for the file |
+| Instead of this (Bash)                        | Prefer using this (Cortex)                 |
+| --------------------------------------------- | ------------------------------------------ |
+| `grep -rn "pattern"` / `rg "pattern"`         | `search_content` with the same pattern     |
+| `grep -rn "fn foo"` / searching for a symbol  | `search_symbols` by name                   |
+| Searching for a concept like "error handling" | `search_by_keyword` with the concept       |
+| Reading a function/class body                 | `get_code_context` with the symbol name    |
+| `grep -rn "import Foo"` / finding usages      | `find_references` for the symbol           |
+| Reading a file to see its structure           | `list_document_symbols` for that file      |
+| `find . -name "*.rs"` / exploring layout      | `list_files` or `list_directory_structure` |
+| Understanding what imports what               | `get_imports` for the file                 |
 
-## When built-in tools ARE appropriate
+### Usage Guidelines
 
-- `Read` — reading a specific known file path in full
-- `Edit` / `Write` — modifying or creating files
-- `Bash` — running builds, tests, git commands, or non-search shell operations
+* Use `search_symbols` for **exact symbol lookups**
+* Use `search_content` for **literal text or patterns**
+* Use `search_by_keyword` for **semantic or conceptual queries**
+* Combine tools when needed (e.g., search → then `get_code_context`)
+* Prefer structured exploration over raw text search when possible
 
-## Rule of thumb
+### Fallback Rule
 
-If the goal is "find", "search", "look up", "where is", "who uses", "what imports", or "show me the code for" — use Cortex. Only use Bash/Read when you already know the exact file path and just want to read or edit it.
+If a Cortex tool returns insufficient results, fails, or cannot express the query, you MAY fall back to Bash tools. Do NOT get stuck — proceed with best-effort completion.
+
+### Allowed Tools
+
+* `Read` — reading a specific known file path in full
+* `Edit` / `Write` — modifying or creating files
+* `Bash` — builds, tests, git commands, or fallback search when justified
 
 Cortex auto-reindexes when source files change (30s cooldown). Call `index_project` if the index seems stale.
 '
+fi
 
 if [[ "$MODE" == "global" ]]; then
     CLAUDE_MD="${HOME}/.claude/CLAUDE.md"
@@ -381,47 +407,111 @@ fi
 # ── Step 6: Install /cortex-task slash command ──────────────────────────
 log_step "Installing /cortex-task slash command..."
 
-CORTEX_TASK_SKILL='Perform the following task using Cortex tools, then export a report: $ARGUMENTS
+if ! CORTEX_TASK_SKILL="$(load_template cortex-task.md)"; then
+    # Fallback: embedded copy for curl-piped installs (no templates/ on disk).
+    # Keep in sync with templates/cortex-task.md — run: make sync-templates
+    CORTEX_TASK_SKILL='Perform the following task using Cortex tools, then export a report: $ARGUMENTS
 
 ## Cortex Tool Rules (MANDATORY)
 
-You MUST use Cortex tools instead of Bash grep/find/rg for ALL code exploration.
+You should **prefer using Cortex tools** instead of Bash (`grep`, `rg`, `find`, etc.) for code exploration whenever possible.
 
-| Instead of this (Bash) | ALWAYS use this (Cortex) |
-|---|---|
-| `grep -rn "pattern"` / `rg "pattern"` | `search_content` with the same pattern |
-| `grep -rn "fn foo"` / searching for a symbol | `search_symbols` by name |
-| Searching for a concept like "error handling" | `search_by_semantic` with the concept |
-| Reading a function/class body | `get_code_context` with the symbol name |
-| `grep -rn "import Foo"` / finding usages | `find_references` for the symbol |
-| Reading a file to see its structure | `list_document_symbols` for that file |
-| `find . -name "*.rs"` / exploring layout | `list_files` or `list_directory_structure` |
-| Understanding what imports what | `get_imports` for the file |
+### Tool Mapping
 
-- `Read` — reading a specific known file path in full
-- `Edit` / `Write` — modifying or creating files
-- `Bash` — running builds, tests, git commands, or non-search shell operations
+| Instead of this (Bash)                        | Prefer using this (Cortex)                 |
+| --------------------------------------------- | ------------------------------------------ |
+| `grep -rn "pattern"` / `rg "pattern"`         | `search_content` with the same pattern     |
+| `grep -rn "fn foo"` / searching for a symbol  | `search_symbols` by name                   |
+| Searching for a concept like "error handling" | `search_by_keyword` with the concept       |
+| Reading a function/class body                 | `get_code_context` with the symbol name    |
+| `grep -rn "import Foo"` / finding usages      | `find_references` for the symbol           |
+| Reading a file to see its structure           | `list_document_symbols` for that file      |
+| `find . -name "*.rs"` / exploring layout      | `list_files` or `list_directory_structure` |
+| Understanding what imports what               | `get_imports` for the file                 |
+
+### Usage Guidelines
+
+* Use `search_symbols` for **exact symbol lookups**
+* Use `search_content` for **literal text or patterns**
+* Use `search_by_keyword` for **semantic or conceptual queries**
+* Combine tools when needed (e.g., search → then `get_code_context`)
+* Prefer structured exploration over raw text search when possible
+
+### Fallback Rule (Important)
+
+If a Cortex tool:
+
+* returns insufficient or irrelevant results
+* fails to execute
+* or cannot express the query
+
+you MAY fallback to Bash tools, but you MUST:
+
+* briefly explain why Cortex was insufficient
+* include this as feedback in `issues_found` in the report
+
+Do NOT get stuck if Cortex tools fail — proceed with best-effort completion.
+
+### Allowed Tools
+
+* `Read` — reading a specific known file path in full
+* `Edit` / `Write` — modifying or creating files
+* `Bash` — builds, tests, git commands, or fallback search when justified
+
+---
 
 ## Task
 
 Do the work described in: "$ARGUMENTS"
 
-Follow normal development practices — explore the codebase with Cortex tools, make changes, run tests/clippy/fmt as needed.
+Follow normal development practices:
 
-## Final Step — Export Report
+* Explore the codebase using Cortex tools when possible
+* Make necessary changes
+* Run tests / clippy / fmt as appropriate
 
-When the task is complete, call `export_report` with:
+---
 
-- `project_root`: the project root directory
-- `task_type`: one of `bug_fix`, `feature`, `refactoring`, `exploration`, `review`, or `other`
-- `summary`: concise summary of what was done and why
-- `tools_used`: list of Cortex tools actually used during this task
-- `files_modified`: list of files that were changed
-- `issues_found`: any bugs, errors, or problems discovered
-- `improvement_suggestions`: actionable suggestions based on observations
+## Final Step — Export Report (Cortex Feedback Only)
 
-Then confirm to the user with the report ID and file path.
+When the task is complete, call `export_report`.
+
+This report is **strictly for evaluating Cortex tools**, NOT the codebase.
+
+### Required fields:
+
+* `project_root`: the project root directory
+* `task_type`: one of `bug_fix`, `feature`, `refactoring`, `exploration`, `review`, or `other`
+* `summary`: concise summary of what was done
+* `model`: the AI model identifier (e.g., "gpt-4o", "claude-sonnet-4-6")
+* `tools_used`: list of Cortex tools actually used (do not guess)
+* `files_modified`: list of modified files
+
+### Cortex Feedback Fields (Important)
+
+Only include feedback about Cortex tools:
+
+* `issues_found`: Problems using Cortex tools ONLY. Examples: missing or incomplete results, irrelevant matches, poor ranking or search quality, confusing errors or unclear outputs, inability to express certain queries.
+
+* `improvement_suggestions`: Suggestions to improve Cortex tools ONLY. Examples: better filtering options, improved ranking, additional tool capabilities, missing metadata in results.
+
+### Critical Rules
+
+* Do NOT include codebase bugs or findings in the report
+* Do NOT fabricate tool usage — only include tools actually used
+* If unsure about a field, omit it rather than guessing
+* Be specific and actionable in feedback
+
+---
+
+## Completion
+
+After calling `export_report`, confirm to the user with:
+
+* the report ID
+* and the file path of the report
 '
+fi
 
 if [[ "$MODE" == "global" ]]; then
     COMMANDS_DIR="${HOME}/.claude/commands"

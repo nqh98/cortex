@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::indexer::db::{DbPool, SymbolRow};
 
-pub async fn search_by_semantic(
+pub async fn search_by_keyword(
     pool: &DbPool,
     query: &str,
     project_root: &str,
@@ -23,7 +23,7 @@ pub async fn search_by_semantic(
         .join(" AND ");
 
     let rows = sqlx::query_as::<_, SymbolRow>(
-        "SELECT s.id, f.project_root, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature
+        "SELECT s.id, f.project_root, f.path, s.name, s.kind, s.start_line, s.end_line, s.signature, f.language
          FROM symbol_search ss
          JOIN symbols s ON ss.rowid = s.id
          JOIN files f ON s.file_id = f.id
@@ -41,7 +41,7 @@ pub async fn search_by_semantic(
     Ok(rows)
 }
 
-pub async fn count_semantic_results(pool: &DbPool, query: &str, project_root: &str) -> Result<i64> {
+pub async fn count_keyword_results(pool: &DbPool, query: &str, project_root: &str) -> Result<i64> {
     let tokens: Vec<&str> = query.split_whitespace().filter(|t| !t.is_empty()).collect();
     if tokens.is_empty() {
         return Ok(0);

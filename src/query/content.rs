@@ -24,6 +24,7 @@ pub async fn search_content(
     pattern: &str,
     file_extension: Option<&str>,
     limit: usize,
+    context_lines: usize,
 ) -> Result<Vec<ContentMatch>> {
     // Fetch file paths from DB
     let files = if let Some(ext) = file_extension {
@@ -47,6 +48,7 @@ pub async fn search_content(
 
     let pattern_owned = pattern.to_string();
     let limit_owned = limit;
+    let ctx_owned = context_lines;
 
     // Run regex matching in a blocking thread
     Ok(tokio::task::spawn_blocking(move || {
@@ -75,7 +77,7 @@ pub async fn search_content(
             for (i, line) in lines.iter().enumerate() {
                 if re.is_match(line) {
                     let before: Vec<String> = if i > 0 {
-                        lines[i.saturating_sub(2)..i]
+                        lines[i.saturating_sub(ctx_owned)..i]
                             .iter()
                             .map(|l| l.to_string())
                             .collect()
@@ -84,7 +86,7 @@ pub async fn search_content(
                     };
 
                     let after: Vec<String> = lines
-                        .get(i + 1..std::cmp::min(i + 3, lines.len()))
+                        .get(i + 1..std::cmp::min(i + 1 + ctx_owned, lines.len()))
                         .map(|slice| slice.iter().map(|l| l.to_string()).collect())
                         .unwrap_or_default();
 

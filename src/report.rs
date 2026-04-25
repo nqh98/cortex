@@ -11,6 +11,8 @@ pub struct TaskReport {
     pub task_type: String,
     pub summary: String,
     #[serde(default)]
+    pub model: String,
+    #[serde(default)]
     pub tools_used: Vec<String>,
     #[serde(default)]
     pub files_modified: Vec<String>,
@@ -29,6 +31,7 @@ pub struct SynthesisResult {
     pub reports_analyzed: usize,
     pub date_range: Option<DateRange>,
     pub task_type_breakdown: HashMap<String, u32>,
+    pub model_breakdown: HashMap<String, u32>,
     pub frequently_modified_files: Vec<FileFrequency>,
     pub recurring_issues: Vec<IssueFrequency>,
     pub improvement_suggestions: Vec<SuggestionFrequency>,
@@ -156,6 +159,17 @@ pub fn synthesize(reports: &[TaskReport], total_count: usize) -> SynthesisResult
         *task_type_counts.entry(r.task_type.clone()).or_insert(0) += 1;
     }
 
+    // Model breakdown
+    let mut model_counts: HashMap<String, u32> = HashMap::new();
+    for r in reports {
+        let model = if r.model.is_empty() {
+            "unknown".to_string()
+        } else {
+            r.model.clone()
+        };
+        *model_counts.entry(model).or_insert(0) += 1;
+    }
+
     // File frequency
     let mut file_counts: HashMap<String, u32> = HashMap::new();
     for r in reports {
@@ -216,6 +230,7 @@ pub fn synthesize(reports: &[TaskReport], total_count: usize) -> SynthesisResult
         total_count,
         reports_analyzed,
         &task_type_counts,
+        &model_counts,
         &frequently_modified_files,
         &recurring_issues,
         &improvement_suggestions,
@@ -226,6 +241,7 @@ pub fn synthesize(reports: &[TaskReport], total_count: usize) -> SynthesisResult
         reports_analyzed,
         date_range,
         task_type_breakdown: task_type_counts,
+        model_breakdown: model_counts,
         frequently_modified_files,
         recurring_issues,
         improvement_suggestions,
@@ -238,6 +254,7 @@ fn generate_summary(
     total: usize,
     analyzed: usize,
     task_types: &HashMap<String, u32>,
+    models: &HashMap<String, u32>,
     top_files: &[FileFrequency],
     top_issues: &[IssueFrequency],
     top_suggestions: &[SuggestionFrequency],
@@ -252,6 +269,14 @@ fn generate_summary(
             .map(|(k, v)| format!("{} {}(s)", v, k))
             .collect();
         parts.push(format!("Task types: {}.", breakdown.join(", ")));
+    }
+
+    if !models.is_empty() {
+        let model_list: Vec<String> = models
+            .iter()
+            .map(|(k, v)| format!("{} ({} report(s))", k, v))
+            .collect();
+        parts.push(format!("AI models: {}.", model_list.join(", ")));
     }
 
     if !top_files.is_empty() {

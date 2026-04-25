@@ -146,7 +146,11 @@ async fn run(cli: Cli) -> cortex::error::Result<()> {
             let db_path = cortex::config::project_db_path(&project_path);
             let db_str = format!("sqlite:{}", db_path.display());
             let pool = db::init_pool(&db_str).await?;
-            let ctx = context::get_code_context(&pool, file.as_deref(), &symbol).await?;
+            let symbol_row = context::lookup_symbol(&pool, file.as_deref(), &symbol).await?;
+            let abs_path = symbol_row.absolute_path();
+            let file_content = std::fs::read_to_string(std::path::Path::new(&abs_path))
+                .map_err(|_| cortex::error::CortexError::FileNotFound(abs_path))?;
+            let ctx = context::extract_code(&symbol_row, &file_content);
             println!("--- {} ({}) ---", ctx.symbol_name, ctx.kind);
             println!(
                 "File: {} lines {}-{}",

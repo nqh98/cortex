@@ -2,16 +2,17 @@ use crate::error::{CortexError, Result};
 use crate::indexer::db::{self, DbPool};
 use std::path::Path;
 
-pub async fn get_code_context(
+/// Look up a symbol in the database and return its row (async, DB-only).
+pub async fn lookup_symbol(
     pool: &DbPool,
     file_path: Option<&str>,
     symbol_name: &str,
-) -> Result<CodeContext> {
+) -> Result<db::SymbolRow> {
     // Find the symbol in the database by name
     let mut symbols = db::search_symbols(pool, symbol_name).await?;
 
     // If file_path provided, filter and rank matches
-    let symbol = if let Some(fp) = file_path {
+    if let Some(fp) = file_path {
         let canonical = Path::new(fp).canonicalize().ok();
         let canonical_str = canonical.as_deref().and_then(|p| p.to_str());
         let filename = Path::new(fp)
@@ -59,7 +60,7 @@ pub async fn get_code_context(
         filtered
             .into_iter()
             .next()
-            .ok_or_else(|| CortexError::SymbolNotFound(format!("{} in {}", symbol_name, fp)))?
+            .ok_or_else(|| CortexError::SymbolNotFound(format!("{} in {}", symbol_name, fp)))
     } else {
         // No file_path — check for ambiguity
         if symbols.len() > 1 {
@@ -85,14 +86,12 @@ pub async fn get_code_context(
         symbols
             .into_iter()
             .next()
-            .ok_or_else(|| CortexError::SymbolNotFound(symbol_name.to_string()))?
-    };
+            .ok_or_else(|| CortexError::SymbolNotFound(symbol_name.to_string()))
+    }
+}
 
-    // Read the file using the absolute path
-    let abs_path = symbol.absolute_path();
-    let content = std::fs::read_to_string(Path::new(&abs_path))
-        .map_err(|_| CortexError::FileNotFound(abs_path.clone()))?;
-
+/// Extract code from file content using symbol line numbers (sync, no DB).
+pub fn extract_code(symbol: &db::SymbolRow, content: &str) -> CodeContext {
     let lines: Vec<&str> = content.lines().collect();
     let start = (symbol.start_line as usize).saturating_sub(1);
     let end = (symbol.end_line as usize).min(lines.len());
@@ -102,15 +101,15 @@ pub async fn get_code_context(
         .collect::<Vec<String>>()
         .join("\n");
 
-    Ok(CodeContext {
-        symbol_name: symbol.name,
-        kind: symbol.kind,
-        file_path: symbol.path,
+    CodeContext {
+        symbol_name: symbol.name.clone(),
+        kind: symbol.kind.clone(),
+        file_path: symbol.path.clone(),
         start_line: symbol.start_line,
         end_line: symbol.end_line,
-        signature: symbol.signature,
+        signature: symbol.signature.clone(),
         code,
-    })
+    }
 }
 
 #[derive(Debug)]

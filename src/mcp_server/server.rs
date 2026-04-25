@@ -4,10 +4,10 @@ use crate::mcp_server::models::{
     CodeContextResult, ContentMatchEntry, ContentSearchResult, DirectoryListing,
     DocumentSymbolEntry, DocumentSymbolResult, ExportReportResult, FileFrequencyResult,
     FindReferencesResult, ImportAnalysisResult, ImportEntry, IndexResult, IndexStatus,
-    IssueFrequencyResult, ReferenceMatchEntry, SearchResult, SemanticSearchResult,
+    IssueFrequencyResult, KeywordSearchResult, ReferenceMatchEntry, SearchResult,
     SuggestionFrequencyResult, SymbolMatch, SymbolStats, SynthesizeReportsResult, ToolUsageResult,
 };
-use crate::query::{content, context, document, imports_query, references, search, semantic};
+use crate::query::{content, context, document, imports_query, keyword, references, search};
 use crate::scanner::walker;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerInfo};
@@ -20,12 +20,79 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 const REINDEX_COOLDOWN: Duration = Duration::from_secs(30);
+const MAX_POOLS: usize = 10;
+
+#[derive(Debug)]
+struct FileCacheEntry {
+    content: String,
+    mtime: SystemTime,
+    cached_at: Instant,
+}
+
+#[derive(Debug)]
+struct FileCache {
+    entries: HashMap<String, FileCacheEntry>,
+    max_entries: usize,
+    ttl: Duration,
+}
+
+impl FileCache {
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            max_entries: 50,
+            ttl: Duration::from_secs(60),
+        }
+    }
+
+    /// Read a file, using cached content if still valid (same mtime, within TTL).
+    fn read(&mut self, path: &Path) -> std::io::Result<String> {
+        let mtime = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+
+        let path_key = path.to_string_lossy().to_string();
+
+        if let Some(entry) = self.entries.get(&path_key) {
+            if entry.cached_at.elapsed() < self.ttl && entry.mtime == mtime {
+                return Ok(entry.content.clone());
+            }
+        }
+
+        let content = std::fs::read_to_string(path)?;
+
+        // Evict oldest entry if at capacity
+        if self.entries.len() >= self.max_entries {
+            if let Some(evict_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, e)| e.cached_at)
+                .map(|(k, _)| k.clone())
+            {
+                self.entries.remove(&evict_key);
+            }
+        }
+
+        self.entries.insert(
+            path_key,
+            FileCacheEntry {
+                content: content.clone(),
+                mtime,
+                cached_at: Instant::now(),
+            },
+        );
+
+        Ok(content)
+    }
+}
 
 #[derive(Debug)]
 pub struct CortexServer {
     config: Arc<Config>,
     pools: tokio::sync::RwLock<HashMap<String, db::DbPool>>,
+    pool_access: tokio::sync::Mutex<HashMap<String, Instant>>,
     last_index_check: tokio::sync::Mutex<HashMap<String, Instant>>,
+    file_cache: std::sync::Mutex<FileCache>,
 }
 
 impl CortexServer {
@@ -33,7 +100,9 @@ impl CortexServer {
         Self {
             config: Arc::new(config),
             pools: tokio::sync::RwLock::new(HashMap::new()),
+            pool_access: tokio::sync::Mutex::new(HashMap::new()),
             last_index_check: tokio::sync::Mutex::new(HashMap::new()),
+            file_cache: std::sync::Mutex::new(FileCache::new()),
         }
     }
 
@@ -41,6 +110,10 @@ impl CortexServer {
         {
             let pools = self.pools.read().await;
             if let Some(pool) = pools.get(project_root) {
+                self.pool_access
+                    .lock()
+                    .await
+                    .insert(project_root.to_string(), Instant::now());
                 return Ok(pool.clone());
             }
         }
@@ -48,7 +121,26 @@ impl CortexServer {
         let mut pools = self.pools.write().await;
         // Double-check after acquiring write lock
         if let Some(pool) = pools.get(project_root) {
+            self.pool_access
+                .lock()
+                .await
+                .insert(project_root.to_string(), Instant::now());
             return Ok(pool.clone());
+        }
+
+        // Evict least-recently-used pool if at capacity
+        if pools.len() >= MAX_POOLS {
+            let access = self.pool_access.lock().await;
+            if let Some(evict_key) = access
+                .iter()
+                .filter(|(k, _)| pools.contains_key(*k))
+                .min_by_key(|(_, t)| *t)
+                .map(|(k, _)| k.clone())
+            {
+                drop(access);
+                pools.remove(&evict_key);
+                self.pool_access.lock().await.remove(&evict_key);
+            }
         }
 
         let db_path = crate::config::project_db_path(Path::new(project_root));
@@ -57,6 +149,10 @@ impl CortexServer {
         }
         let pool = db::init_pool(&format!("sqlite:{}", db_path.display())).await?;
         pools.insert(project_root.to_string(), pool.clone());
+        self.pool_access
+            .lock()
+            .await
+            .insert(project_root.to_string(), Instant::now());
         Ok(pool)
     }
 
@@ -131,6 +227,37 @@ fn days_from_ce(year: u64, month: u8, day: u8) -> u64 {
 }
 
 fn has_stale_files(project_path: &Path, since: SystemTime) -> bool {
+    // Tier 1: Check the project root directory mtime itself (O(1))
+    if let Ok(meta) = std::fs::metadata(project_path) {
+        if let Ok(modified) = meta.modified() {
+            if modified <= since {
+                // Root dir hasn't changed — no files could have been added/removed
+                return false;
+            }
+        }
+    }
+
+    // Tier 2: Check immediate subdirectory mtimes (O(depth-1))
+    // Most edits happen inside a small number of top-level dirs (src/, lib/, etc.)
+    if let Ok(entries) = std::fs::read_dir(project_path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Ok(meta) = std::fs::metadata(&path) {
+                    if let Ok(modified) = meta.modified() {
+                        if modified > since {
+                            // At least one top-level dir changed — need a real check
+                            // Fall through to tier 3 instead of returning true,
+                            // because dir mtime alone doesn't mean source files changed.
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Tier 3: Walk source files (O(N)) — but early-return on first stale file
     let Ok(files) = walker::walk_directory(project_path) else {
         return false;
     };
@@ -165,6 +292,9 @@ pub struct SearchSymbolsRequest {
     /// Offset for pagination (default: 0)
     #[schemars(description = "Offset for pagination (default: 0)")]
     pub offset: Option<u32>,
+    /// Search mode: "contains" (default), "exact", or "prefix"
+    #[schemars(description = "Search mode: 'contains' (default, matches anywhere in name), 'exact' (exact name match), 'prefix' (name starts with query)")]
+    pub search_mode: Option<String>,
 }
 
 /// Get code context request parameters
@@ -230,6 +360,9 @@ pub struct SearchContentRequest {
     /// Maximum number of matches to return (default: 50)
     #[schemars(description = "Maximum number of matches to return (default: 50, max: 200)")]
     pub limit: Option<u32>,
+    /// Number of context lines before and after each match (default: 2, max: 10)
+    #[schemars(description = "Number of context lines before and after each match (default: 2, max: 10)")]
+    pub context_lines: Option<u32>,
 }
 
 /// Find references request parameters
@@ -249,14 +382,17 @@ pub struct FindReferencesRequest {
     /// Maximum number of results (default: 50)
     #[schemars(description = "Maximum number of results to return (default: 50, max: 100)")]
     pub limit: Option<u32>,
+    /// Number of context lines before and after each match (default: 2, max: 10)
+    #[schemars(description = "Number of context lines before and after each reference (default: 2, max: 10)")]
+    pub context_lines: Option<u32>,
 }
 
-/// Semantic search request parameters
+/// Keyword search request parameters
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct SearchBySemanticRequest {
+pub struct SearchByKeywordRequest {
     /// Natural language or keyword query to search for
     #[schemars(
-        description = "Natural language or keyword query to search for (e.g., 'rate limiting', 'database query'). Searches symbol names, signatures, and documentation."
+        description = "Natural language or keyword query to search for (e.g., 'rate limiting', 'database query'). Searches tokenized symbol names, signatures, and documentation using FTS5 prefix matching."
     )]
     pub query: String,
     /// Absolute path to the project root directory
@@ -299,6 +435,9 @@ pub struct ExportReportRequest {
     /// Summary of what was accomplished
     #[schemars(description = "Summary of what was accomplished")]
     pub summary: String,
+    /// AI model that generated this report (e.g., 'claude-sonnet-4-6', 'gpt-4o')
+    #[schemars(description = "AI model that generated this report (e.g., 'claude-sonnet-4-6', 'gpt-4o'). Include your model identifier so reports can be tracked per model.")]
+    pub model: Option<String>,
     /// List of Cortex tool names used during the task
     #[schemars(
         description = "List of Cortex tool names used during the task (e.g. ['search_symbols', 'get_code_context'])"
@@ -381,7 +520,7 @@ impl CortexServer {
     ///
     /// Returns structured symbol metadata with file locations.
     #[tool(
-        description = "Search for code symbols by name pattern matching. Supports filtering by kind and pagination. Returns structured JSON with symbol metadata and file locations."
+        description = "Search for code symbols by name. Supports three search modes via search_mode: 'contains' (default, substring match), 'exact' (exact name), 'prefix' (name starts with query). Supports filtering by symbol kind and language, and pagination. Results include file path, line numbers, signature, and language."
     )]
     async fn search_symbols(
         &self,
@@ -436,6 +575,7 @@ impl CortexServer {
         let limit = request.limit.unwrap_or(50).min(100) as usize;
         let offset = request.offset.unwrap_or(0) as usize;
         let kind_filter = request.kind.map(|k| k.as_str());
+        let search_mode = request.search_mode.as_deref().unwrap_or("contains");
 
         let results = match search::search_symbols_paginated(
             &pool,
@@ -443,6 +583,7 @@ impl CortexServer {
             kind_filter,
             limit,
             offset,
+            search_mode,
         )
         .await
         {
@@ -458,7 +599,7 @@ impl CortexServer {
             }
         };
 
-        let total_count = match search::count_symbols(&pool, &request.query, kind_filter).await {
+        let total_count = match search::count_symbols(&pool, &request.query, kind_filter, search_mode).await {
             Ok(c) => c as u32,
             Err(_) => results.len() as u32, // Fallback to returned count
         };
@@ -476,6 +617,7 @@ impl CortexServer {
                 start_line: row.start_line,
                 end_line: row.end_line,
                 signature: row.signature,
+                language: row.language,
             })
             .collect();
 
@@ -500,7 +642,7 @@ impl CortexServer {
     /// Use file_path to disambiguate when multiple symbols have the same name.
     /// Returns the full implementation with optional context lines.
     #[tool(
-        description = "Get the source code for a symbol by name. Use file_path to disambiguate when multiple symbols have the same name. Returns structured JSON with full implementation and optional context lines."
+        description = "Get the full source code for a symbol by name. Use file_path to disambiguate when multiple symbols have the same name. Returns structured JSON with code, line numbers, signature, and optional surrounding context. On ambiguity, suggests similar symbol names."
     )]
     async fn get_code_context(
         &self,
@@ -552,14 +694,14 @@ impl CortexServer {
             }
         };
 
-        let ctx = match context::get_code_context(
+        let symbol = match context::lookup_symbol(
             &pool,
             request.file_path.as_deref(),
             &request.symbol_name,
         )
         .await
         {
-            Ok(c) => c,
+            Ok(s) => s,
             Err(e) => {
                 let error_code = match &e {
                     crate::error::CortexError::SymbolNotFound(_) => "symbol_not_found",
@@ -571,7 +713,7 @@ impl CortexServer {
                 // On symbol_not_found, suggest similar symbols
                 if matches!(&e, crate::error::CortexError::SymbolNotFound(_)) {
                     let suggestions =
-                        search::search_symbols_paginated(&pool, &request.symbol_name, None, 5, 0)
+                        search::search_symbols_paginated(&pool, &request.symbol_name, None, 5, 0, "contains")
                             .await
                             .unwrap_or_default();
 
@@ -608,6 +750,25 @@ impl CortexServer {
                 .to_string();
             }
         };
+
+        let abs_path = symbol.absolute_path();
+        let file_content = {
+            let mut cache = self.file_cache.lock().unwrap();
+            match cache.read(Path::new(&abs_path)) {
+                Ok(c) => c,
+                Err(_) => {
+                    return serde_json::json!({
+                        "error": {
+                            "code": "file_not_found",
+                            "message": format!("File not found: {}", abs_path)
+                        }
+                    })
+                    .to_string();
+                }
+            }
+        };
+
+        let ctx = context::extract_code(&symbol, &file_content);
 
         let context_lines = request.context_lines.unwrap_or(0) as usize;
         let (code, preview, context_before, context_after) =
@@ -753,7 +914,7 @@ impl CortexServer {
     ///
     /// Searches file contents using regex or plain text. Finds TODO comments, raw SQL, security patterns, etc.
     #[tool(
-        description = "Search for text patterns within indexed source files (regex or plain text). Returns matched lines with surrounding context. Useful for finding TODOs, raw SQL, security patterns, etc."
+        description = "Search file contents by regex or plain text pattern. Returns matched lines with configurable surrounding context (default 2 lines). Supports file extension filtering. Falls back to literal search if regex is invalid. Useful for finding TODOs, raw SQL, security patterns, etc."
     )]
     async fn search_content(
         &self,
@@ -806,10 +967,11 @@ impl CortexServer {
         };
 
         let limit = request.limit.unwrap_or(50).min(200) as usize;
+        let context_lines = request.context_lines.unwrap_or(2).min(10) as usize;
         let ext = request.file_extension.as_deref();
 
         let matches =
-            match content::search_content(&pool, &project_root, &request.pattern, ext, limit).await
+            match content::search_content(&pool, &project_root, &request.pattern, ext, limit, context_lines).await
             {
                 Ok(m) => m,
                 Err(e) => {
@@ -859,7 +1021,7 @@ impl CortexServer {
     ///
     /// Classifies each reference as import, call, type usage, definition, or other.
     #[tool(
-        description = "Find all references to a symbol across the project. Classifies references as import, call, type_usage, definition, or other. Returns file locations with line content."
+        description = "Find references to a symbol by name across the project. Uses text search with heuristic classification (import, call, type_usage, definition, other). Note: does not track aliased or renamed imports. Returns file locations with line content and configurable context."
     )]
     async fn find_references(
         &self,
@@ -912,6 +1074,7 @@ impl CortexServer {
         };
 
         let limit = request.limit.unwrap_or(50).min(100) as usize;
+        let context_lines = request.context_lines.unwrap_or(2).min(10) as usize;
 
         let refs = match references::find_references(
             &pool,
@@ -919,6 +1082,7 @@ impl CortexServer {
             &request.symbol_name,
             request.file_path.as_deref(),
             limit,
+            context_lines,
         )
         .await
         {
@@ -971,15 +1135,15 @@ impl CortexServer {
         })
     }
 
-    /// Search for symbols by concept or keyword (semantic search).
+    /// Search for symbols by keyword using full-text search.
     ///
-    /// Uses full-text search across symbol names, signatures, and documentation.
+    /// Uses FTS5 prefix matching across tokenized symbol names, signatures, and documentation.
     #[tool(
-        description = "Search for symbols by concept or keyword using full-text search. Searches symbol names, signatures, and documentation. E.g., 'rate limiting', 'database connection', 'error handling'."
+        description = "Search for symbols by keyword using full-text search (FTS5). Matches tokenized symbol names, signatures, and documentation with prefix matching. Best for keyword-based lookups like 'rate limiting', 'database connection'. Not embedding-based semantic search."
     )]
-    async fn search_by_semantic(
+    async fn search_by_keyword(
         &self,
-        Parameters(request): Parameters<SearchBySemanticRequest>,
+        Parameters(request): Parameters<SearchByKeywordRequest>,
     ) -> String {
         if request.query.trim().is_empty() {
             return serde_json::json!({
@@ -1030,13 +1194,13 @@ impl CortexServer {
         let limit = request.limit.unwrap_or(50).min(100) as usize;
 
         let results =
-            match semantic::search_by_semantic(&pool, &request.query, &project_root, limit).await {
+            match keyword::search_by_keyword(&pool, &request.query, &project_root, limit).await {
                 Ok(r) => r,
                 Err(e) => {
                     return serde_json::json!({
                         "error": {
                             "code": "query_error",
-                            "message": format!("Semantic search failed: {e}")
+                            "message": format!("Keyword search failed: {e}")
                         }
                     })
                     .to_string()
@@ -1044,7 +1208,7 @@ impl CortexServer {
             };
 
         let total_count =
-            match semantic::count_semantic_results(&pool, &request.query, &project_root).await {
+            match keyword::count_keyword_results(&pool, &request.query, &project_root).await {
                 Ok(c) => c as u32,
                 Err(_) => results.len() as u32,
             };
@@ -1062,10 +1226,11 @@ impl CortexServer {
                 start_line: row.start_line,
                 end_line: row.end_line,
                 signature: row.signature,
+                language: row.language,
             })
             .collect();
 
-        serde_json::to_string(&SemanticSearchResult {
+        serde_json::to_string(&KeywordSearchResult {
             query: request.query,
             total_count,
             has_more,
@@ -1465,6 +1630,7 @@ impl CortexServer {
             project_root: String::new(), // generated by save_report
             task_type,
             summary: request.summary,
+            model: request.model.unwrap_or_default(),
             tools_used: request.tools_used.unwrap_or_default(),
             files_modified: request.files_modified.unwrap_or_default(),
             issues_found: request.issues_found.unwrap_or_default(),
@@ -1565,6 +1731,7 @@ impl CortexServer {
                 reports_analyzed: 0,
                 date_range: None,
                 task_type_breakdown: HashMap::new(),
+                model_breakdown: HashMap::new(),
                 frequently_modified_files: Vec::new(),
                 recurring_issues: Vec::new(),
                 improvement_suggestions: Vec::new(),
@@ -1638,6 +1805,7 @@ impl CortexServer {
             reports_analyzed: result.reports_analyzed,
             date_range,
             task_type_breakdown: result.task_type_breakdown,
+            model_breakdown: result.model_breakdown,
             frequently_modified_files,
             recurring_issues,
             improvement_suggestions,
@@ -1953,7 +2121,7 @@ Available tools:
 - list_document_symbols: List all symbols in a file with hierarchy (returns JSON)
 - search_content: Search file contents by regex or text pattern (returns JSON)
 - find_references: Find all references to a symbol across the project (returns JSON)
-- search_by_semantic: Search symbols by concept using full-text search (returns JSON)
+- search_by_keyword: Search symbols by keyword using FTS5 full-text search (returns JSON)
 - get_imports: Analyze import dependencies for a file (returns JSON)
 - export_report: Export a task report after completing work (saves to .cortex/reports/)
 - synthesize_reports: Synthesize past reports to identify patterns and improvements (returns JSON)
@@ -1961,7 +2129,7 @@ Available tools:
 Usage pattern:
 1. Use index_project to index your codebase (first time or after changes)
 2. Use get_index_status to check if a project is indexed
-3. Use search_symbols to find symbols by name, or search_by_semantic to find by concept/keyword
+3. Use search_symbols to find symbols by name, or search_by_keyword to find by concept/keyword using FTS5
 4. Use get_code_context to read full source code for a symbol
 5. Use list_document_symbols to see all symbols in a file with hierarchy
 6. Use find_references to find all usages of a symbol across the project

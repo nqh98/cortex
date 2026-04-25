@@ -101,6 +101,7 @@ pub async fn find_references(
     symbol_name: &str,
     file_path: Option<&str>,
     limit: usize,
+    context_lines: usize,
 ) -> Result<Vec<ReferenceMatch>> {
     // Get all content matches for the symbol name
     let content_matches = crate::query::content::search_content(
@@ -108,42 +109,111 @@ pub async fn find_references(
         project_root,
         symbol_name,
         None,
-        limit * 2, // Fetch extra since we'll filter some out
+        limit * 3, // Fetch extra since we'll filter many out
+        context_lines,
     )
     .await?;
 
     // Determine definition file if provided
     let def_file = file_path.map(|f| f.to_string());
 
-    let mut references = Vec::new();
-    for m in content_matches {
-        // Skip lines that are inside comments (simple heuristic)
-        let trimmed = m.line_content.trim();
-        if trimmed.starts_with("//") || trimmed.starts_with("*") || trimmed.starts_with("/*") {
-            continue;
-        }
-        if trimmed.starts_with('#') && !trimmed.starts_with("#[") && !trimmed.starts_with("#[") {
-            continue;
-        }
+    // Group matches by file and sort by line number for stateful comment tracking
+    let mut by_file: std::collections::HashMap<String, Vec<&crate::query::content::ContentMatch>> =
+        std::collections::HashMap::new();
+    for m in &content_matches {
+        by_file.entry(m.file_path.clone()).or_default().push(m);
+    }
+    for matches in by_file.values_mut() {
+        matches.sort_by_key(|m| m.line_number);
+    }
 
+    let mut references = Vec::new();
+    for (file, file_matches) in by_file {
         let is_def_file = def_file
             .as_ref()
-            .map(|df| m.file_path == *df || m.file_path.ends_with(df))
+            .map(|df| file == *df || file.ends_with(df.as_str()))
             .unwrap_or(false);
 
-        let ref_type = classify_reference(&m.line_content, symbol_name, is_def_file);
+        // Determine comment style from file extension
+        let ext = std::path::Path::new(&file)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let (uses_block, uses_triple) = match ext {
+            "py" => (false, true),
+            "rs" | "java" | "js" | "ts" | "go" | "c" | "cpp" | "h" | "hpp" => (true, false),
+            "html" | "htm" | "xml" | "svg" => (true, false),
+            _ => (true, false),
+        };
 
-        // Optionally skip definitions
-        references.push(ReferenceMatch {
-            file_path: m.file_path,
-            project_root: m.project_root,
-            line_number: m.line_number,
-            line_content: m.line_content,
-            reference_type: ref_type,
-        });
+        let mut in_block_comment = false;
+        let mut in_triple_quote = false;
+        for m in file_matches {
+            // Scan lines between last checked and current to update comment state.
+            // We need the actual file content for lines we haven't seen.
+            // Since we only have matched lines, do per-line state tracking on the matches.
+            // This is imperfect but handles the common case where matched lines are sequential.
+            let line = &m.line_content;
+            let trimmed = line.trim();
 
-        if references.len() >= limit {
-            break;
+            // Track block comment state (/* ... */)
+            if uses_block {
+                // Count open/close markers in this line
+                let opens = trimmed.matches("/*").count();
+                let closes = trimmed.matches("*/").count();
+                // JSX/HTML style
+                if trimmed.contains("{/*") {
+                    in_block_comment = true;
+                }
+                if opens > closes && !trimmed.contains("*/") {
+                    in_block_comment = true;
+                }
+                if closes > 0 && trimmed.ends_with("*/") {
+                    in_block_comment = false;
+                    continue;
+                }
+                if in_block_comment {
+                    continue;
+                }
+            }
+
+            // Track Python triple-quote state
+            if uses_triple {
+                let triple_count = trimmed.matches("\"\"\"").count() + trimmed.matches("'''").count();
+                if triple_count % 2 == 1 {
+                    in_triple_quote = !in_triple_quote;
+                }
+                if in_triple_quote {
+                    continue;
+                }
+            }
+
+            // Single-line comment styles
+            if trimmed.starts_with("//") {
+                continue;
+            }
+            if trimmed.starts_with('#') && !trimmed.starts_with("#[") {
+                continue;
+            }
+            // Lines starting with * inside a block comment (already handled by in_block_comment,
+            // but catch standalone cases)
+            if trimmed.starts_with('*') && trimmed.len() > 1 && trimmed.chars().nth(1) == Some('/') {
+                continue;
+            }
+
+            let ref_type = classify_reference(line, symbol_name, is_def_file);
+
+            references.push(ReferenceMatch {
+                file_path: file.clone(),
+                project_root: m.project_root.clone(),
+                line_number: m.line_number,
+                line_content: m.line_content.clone(),
+                reference_type: ref_type,
+            });
+
+            if references.len() >= limit {
+                return Ok(references);
+            }
         }
     }
 

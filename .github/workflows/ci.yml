@@ -94,3 +94,11 @@ jobs:
             sleep 15
           done
           exit 1
+
+  templates-sync:
+    name: Templates Sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check embedded templates match templates/ files
+        run: ./scripts/check-templates-sync.sh

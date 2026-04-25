@@ -4,4 +4,4 @@ pub mod document;
 pub mod imports_query;
 pub mod references;
 pub mod search;
-pub mod semantic;
+pub mod keyword;

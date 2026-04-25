@@ -52,7 +52,7 @@ jobs:
       - name: Package binary
         run: |
           cp target/${{ matrix.target }}/release/cortex cortex
-          tar czf ${{ matrix.artifact }} cortex
+          tar czf ${{ matrix.artifact }} cortex install.sh
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
