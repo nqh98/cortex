@@ -53,7 +53,7 @@ fn extract_java_symbols(node: &tree_sitter::Node, source: &str, symbols: &mut Ve
         }
         "annotation_type_declaration" => {
             if let Some(name) = node.child_by_field_name("name") {
-                if let Some(name_text) = name.utf8_text(source.as_bytes()).ok() {
+                if let Ok(name_text) = name.utf8_text(source.as_bytes()) {
                     symbols.push(Symbol {
                         name: name_text.to_string(),
                         kind: SymbolKind::Interface,
@@ -142,13 +142,13 @@ fn extract_java_class(node: &tree_sitter::Node, source: &str) -> Option<Symbol> 
         match child.kind() {
             "superclass" => {
                 if let Some(type_id) = find_child_by_kind(&child, "type_identifier") {
-                    if let Some(t) = type_id.utf8_text(source.as_bytes()).ok() {
+                    if let Ok(t) = type_id.utf8_text(source.as_bytes()) {
                         parts.push(format!("extends {t}"));
                     }
                 }
             }
             "super_interfaces" => {
-                let text = child.utf8_text(source.as_bytes()).ok().unwrap_or("");
+                let text = child.utf8_text(source.as_bytes()).unwrap_or("");
                 parts.push(text.to_string());
             }
             _ => {}
@@ -176,7 +176,7 @@ fn extract_java_interface(node: &tree_sitter::Node, source: &str) -> Option<Symb
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "extends_interfaces" {
-            let text = child.utf8_text(source.as_bytes()).ok().unwrap_or("");
+            let text = child.utf8_text(source.as_bytes()).unwrap_or("");
             parts.push(text.to_string());
         }
     }
@@ -202,7 +202,7 @@ fn extract_java_enum(node: &tree_sitter::Node, source: &str) -> Option<Symbol> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "super_interfaces" {
-            let text = child.utf8_text(source.as_bytes()).ok().unwrap_or("");
+            let text = child.utf8_text(source.as_bytes()).unwrap_or("");
             parts.push(text.to_string());
         }
     }
@@ -229,7 +229,7 @@ fn extract_java_method(node: &tree_sitter::Node, source: &str) -> Option<Symbol>
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "modifiers" {
-            if let Some(mod_text) = child.utf8_text(source.as_bytes()).ok() {
+            if let Ok(mod_text) = child.utf8_text(source.as_bytes()) {
                 sig_parts.push(mod_text.to_string());
             }
         }
@@ -241,7 +241,7 @@ fn extract_java_method(node: &tree_sitter::Node, source: &str) -> Option<Symbol>
         .or_else(|| find_child_by_kind(node, "array_type"))
         .or_else(|| find_child_by_kind(node, "void_type"));
     if let Some(rt) = return_type {
-        if let Some(rt_text) = rt.utf8_text(source.as_bytes()).ok() {
+        if let Ok(rt_text) = rt.utf8_text(source.as_bytes()) {
             sig_parts.push(rt_text.to_string());
         }
     }
@@ -277,7 +277,7 @@ fn extract_java_constructor(node: &tree_sitter::Node, source: &str) -> Option<Sy
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "modifiers" {
-            if let Some(mod_text) = child.utf8_text(source.as_bytes()).ok() {
+            if let Ok(mod_text) = child.utf8_text(source.as_bytes()) {
                 sig_parts.push(mod_text.to_string());
             }
         }
@@ -310,7 +310,7 @@ fn extract_java_field(node: &tree_sitter::Node, source: &str) -> Option<Symbol> 
     let mut is_final = false;
     for child in node.children(&mut cursor) {
         if child.kind() == "modifiers" {
-            let text = child.utf8_text(source.as_bytes()).ok().unwrap_or("");
+            let text = child.utf8_text(source.as_bytes()).unwrap_or("");
             is_static = text.contains("static");
             is_final = text.contains("final");
         }
@@ -359,7 +359,6 @@ fn extract_java_imports(node: &tree_sitter::Node, source: &str, imports: &mut Ve
         let line = node.start_position().row + 1;
         let raw = node
             .utf8_text(source.as_bytes())
-            .ok()
             .unwrap_or("")
             .to_string();
 
@@ -379,14 +378,13 @@ fn extract_java_imports(node: &tree_sitter::Node, source: &str, imports: &mut Ve
                 "asterisk" => {
                     is_wildcard = true;
                 }
-                "identifier" | "type_identifier" => {
-                    if from_path.is_none() {
+                "identifier" | "type_identifier"
+                    if from_path.is_none() => {
                         from_path = child
                             .utf8_text(source.as_bytes())
                             .ok()
                             .map(|s| s.to_string());
                     }
-                }
                 _ => {}
             }
         }
@@ -422,12 +420,8 @@ fn find_child_by_kind<'a>(
     kind: &str,
 ) -> Option<tree_sitter::Node<'a>> {
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == kind {
-            return Some(child);
-        }
-    }
-    None
+    let result = node.children(&mut cursor).find(|child| child.kind() == kind);
+    result
 }
 
 /// Extract Javadoc comment preceding a node.
@@ -446,7 +440,7 @@ fn extract_javadoc(node: &tree_sitter::Node, source: &str) -> Option<String> {
             continue;
         }
         if child.kind() == "block_comment" {
-            let text = child.utf8_text(source.as_bytes()).ok().unwrap_or("");
+            let text = child.utf8_text(source.as_bytes()).unwrap_or("");
             if text.starts_with("/**") {
                 let cleaned = clean_javadoc(text);
                 if !cleaned.is_empty() {

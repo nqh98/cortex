@@ -20,7 +20,7 @@ impl ImportType {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "import" => Self::Import,
             "require" => Self::Require,

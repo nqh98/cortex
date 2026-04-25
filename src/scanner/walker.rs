@@ -48,7 +48,7 @@ pub fn walk_directory(root: &Path) -> crate::error::Result<Vec<WalkResult>> {
         let entry = entry
             .map_err(|e| crate::error::CortexError::Io(std::io::Error::other(e.to_string())))?;
 
-        if !entry.file_type().map_or(false, |ft| ft.is_file()) {
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
             continue;
         }
 
@@ -94,7 +94,7 @@ pub fn directory_tree_structured(
 
         // Filter by extension if specified (only for files)
         if let Some(ext) = extension_filter {
-            if entry.file_type().map_or(false, |ft| ft.is_file()) {
+            if entry.file_type().is_some_and(|ft| ft.is_file()) {
                 let file_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                 if file_ext != ext {
                     continue;
@@ -107,9 +107,9 @@ pub fn directory_tree_structured(
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| name.clone());
 
-        let entry_type = if entry.file_type().map_or(false, |ft| ft.is_dir()) {
+        let entry_type = if entry.file_type().is_some_and(|ft| ft.is_dir()) {
             FileType::Directory
-        } else if entry.file_type().map_or(false, |ft| ft.is_symlink()) {
+        } else if entry.file_type().is_some_and(|ft| ft.is_symlink()) {
             FileType::Symlink
         } else {
             FileType::File
@@ -179,8 +179,8 @@ pub fn list_files_structured(
             continue;
         }
 
-        let is_dir = entry.file_type().map_or(false, |ft| ft.is_dir());
-        let is_file = entry.file_type().map_or(false, |ft| ft.is_file());
+        let is_dir = entry.file_type().is_some_and(|ft| ft.is_dir());
+        let is_file = entry.file_type().is_some_and(|ft| ft.is_file());
 
         if is_dir && !include_directories {
             continue;
@@ -214,7 +214,7 @@ pub fn list_files_structured(
 
         let entry_type = if is_dir {
             FileType::Directory
-        } else if entry.file_type().map_or(false, |ft| ft.is_symlink()) {
+        } else if entry.file_type().is_some_and(|ft| ft.is_symlink()) {
             FileType::Symlink
         } else {
             FileType::File
@@ -296,7 +296,7 @@ pub fn directory_tree(root: &Path, max_depth: Option<usize>) -> crate::error::Re
 
         let name = entry.file_name().to_string_lossy().to_string();
 
-        let suffix = if entry.file_type().map_or(false, |ft| ft.is_dir()) {
+        let suffix = if entry.file_type().is_some_and(|ft| ft.is_dir()) {
             "/".to_string()
         } else {
             String::new()

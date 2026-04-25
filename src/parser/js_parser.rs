@@ -170,7 +170,7 @@ fn extract_variable_declarations(
 
             if let (Some(name_n), Some(value_n)) = (name_node, value_node) {
                 if value_n.kind() == "arrow_function" {
-                    if let Some(name) = name_n.utf8_text(source.as_bytes()).ok() {
+                    if let Ok(name) = name_n.utf8_text(source.as_bytes()) {
                         symbols.push(Symbol {
                             name: name.to_string(),
                             kind: SymbolKind::Function,
@@ -193,12 +193,8 @@ fn find_child_by_kind<'a>(
     kind: &str,
 ) -> Option<tree_sitter::Node<'a>> {
     let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == kind {
-            return Some(child);
-        }
-    }
-    None
+    let result = node.children(&mut cursor).find(|child| child.kind() == kind);
+    result
 }
 
 /// Extract JSDoc comment preceding a node.
@@ -274,7 +270,7 @@ fn extract_js_imports(node: &tree_sitter::Node, source: &str, imports: &mut Vec<
                         for cc in child.children(&mut ic) {
                             if cc.kind() == "import_specifier" {
                                 if let Some(name) = cc.child_by_field_name("name") {
-                                    if let Some(t) = name.utf8_text(source.as_bytes()).ok() {
+                                    if let Ok(t) = name.utf8_text(source.as_bytes()) {
                                         symbols_list.push(t.to_string());
                                     }
                                 }
@@ -282,7 +278,7 @@ fn extract_js_imports(node: &tree_sitter::Node, source: &str, imports: &mut Vec<
                         }
                     }
                     "identifier" => {
-                        if let Some(t) = child.utf8_text(source.as_bytes()).ok() {
+                        if let Ok(t) = child.utf8_text(source.as_bytes()) {
                             symbols_list.push(t.to_string());
                         }
                     }
@@ -306,7 +302,7 @@ fn extract_js_imports(node: &tree_sitter::Node, source: &str, imports: &mut Vec<
         "call_expression" => {
             let func = node.child_by_field_name("function");
             if let Some(f) = func {
-                if let Some(name) = f.utf8_text(source.as_bytes()).ok() {
+                if let Ok(name) = f.utf8_text(source.as_bytes()) {
                     if name == "require" {
                         let line = node.start_position().row + 1;
                         let raw = node

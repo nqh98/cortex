@@ -187,7 +187,7 @@ async fn run(cli: Cli) -> cortex::error::Result<()> {
 
             let db_path = cortex::config::project_db_path(&project_path);
             if db_path.exists() {
-                std::fs::remove_file(&db_path).map_err(|e| cortex::error::CortexError::Io(e))?;
+                std::fs::remove_file(&db_path).map_err(cortex::error::CortexError::Io)?;
                 cortex::config::unregister_project(&root);
                 println!("Cleared index for {}", root);
             } else {

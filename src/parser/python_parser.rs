@@ -119,7 +119,7 @@ fn extract_python_docstring(node: &tree_sitter::Node, source: &str) -> Option<St
     for child in node.children(&mut cursor) {
         if child.kind() == "block" {
             let mut block_cursor = child.walk();
-            for block_child in child.children(&mut block_cursor) {
+            if let Some(block_child) = child.children(&mut block_cursor).next() {
                 if block_child.kind() == "expression_statement" {
                     if let Some(string_node) = block_child.child(0) {
                         if string_node.kind() == "string" {
@@ -138,7 +138,7 @@ fn extract_python_docstring(node: &tree_sitter::Node, source: &str) -> Option<St
                         }
                     }
                 }
-                break; // Only check first statement
+                // Only check first statement
             }
             break;
         }
@@ -201,16 +201,15 @@ fn extract_python_imports(node: &tree_sitter::Node, source: &str, imports: &mut 
 
             for child in &children {
                 match child.kind() {
-                    "dotted_name" | "relative_import" => {
-                        if module_path.is_none() {
+                    "dotted_name" | "relative_import"
+                        if module_path.is_none() => {
                             module_path = child
                                 .utf8_text(source.as_bytes())
                                 .ok()
                                 .map(|s| s.to_string());
                         }
-                    }
                     "identifier" => {
-                        if let Some(t) = child.utf8_text(source.as_bytes()).ok() {
+                        if let Ok(t) = child.utf8_text(source.as_bytes()) {
                             symbol_names.push(t.to_string());
                         }
                     }
@@ -219,7 +218,7 @@ fn extract_python_imports(node: &tree_sitter::Node, source: &str, imports: &mut 
                     }
                     "aliased_import" => {
                         if let Some(name) = child.child(0) {
-                            if let Some(t) = name.utf8_text(source.as_bytes()).ok() {
+                            if let Ok(t) = name.utf8_text(source.as_bytes()) {
                                 symbol_names.push(t.to_string());
                             }
                         }
