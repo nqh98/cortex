@@ -1663,7 +1663,7 @@ impl CortexServer {
             .to_string();
         }
 
-        if request.model.as_ref().map_or(true, |m| m.trim().is_empty()) {
+        if request.model.as_ref().is_none_or(|m| m.trim().is_empty()) {
             return serde_json::json!({
                 "error": {
                     "code": "invalid_parameters",
