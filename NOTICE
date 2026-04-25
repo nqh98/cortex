@@ -1,0 +1,34 @@
+Cortex
+Copyright (c) 2026 Cortex Contributors
+
+This project is licensed under the MIT License (see LICENSE).
+
+---
+
+Third-party libraries included in this project:
+
+tree-sitter (v0.26) — MIT License
+  Copyright (c) Max Brunsfeld and contributors
+  https://github.com/tree-sitter/tree-sitter
+
+tree-sitter-rust (v0.24) — MIT License
+  Copyright (c) tree-sitter contributors
+  https://github.com/tree-sitter/tree-sitter-rust
+
+tree-sitter-python (v0.25) — MIT License
+  Copyright (c) tree-sitter contributors
+  https://github.com/tree-sitter/tree-sitter-python
+
+tree-sitter-javascript (v0.25) — MIT License
+  Copyright (c) tree-sitter contributors
+  https://github.com/tree-sitter/tree-sitter-javascript
+
+tree-sitter-typescript (v0.23) — MIT License
+  Copyright (c) tree-sitter contributors
+  https://github.com/tree-sitter/tree-sitter-typescript
+
+tree-sitter-java (v0.23) — MIT License
+  Copyright (c) tree-sitter contributors
+  https://github.com/tree-sitter/tree-sitter-java
+
+A full list of dependencies and their licenses is available in the Cargo.lock file.

@@ -5,7 +5,7 @@ Thanks for your interest in contributing! This guide covers the basics.
 ## Getting Started
 
 1. Fork the repository
-2. Clone your fork: `git clone https://github.com/<your-user>/cortex.git`
+2. Clone your fork: `git clone https://github.com/nqh98/cortex.git`
 3. Create a feature branch: `git checkout -b my-feature`
 4. Build: `cargo build`
 5. Test: `cargo test`
