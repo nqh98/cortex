@@ -293,7 +293,9 @@ pub struct SearchSymbolsRequest {
     #[schemars(description = "Offset for pagination (default: 0)")]
     pub offset: Option<u32>,
     /// Search mode: "contains" (default), "exact", or "prefix"
-    #[schemars(description = "Search mode: 'contains' (default, matches anywhere in name), 'exact' (exact name match), 'prefix' (name starts with query)")]
+    #[schemars(
+        description = "Search mode: 'contains' (default, matches anywhere in name), 'exact' (exact name match), 'prefix' (name starts with query)"
+    )]
     pub search_mode: Option<String>,
 }
 
@@ -361,7 +363,9 @@ pub struct SearchContentRequest {
     #[schemars(description = "Maximum number of matches to return (default: 50, max: 200)")]
     pub limit: Option<u32>,
     /// Number of context lines before and after each match (default: 2, max: 10)
-    #[schemars(description = "Number of context lines before and after each match (default: 2, max: 10)")]
+    #[schemars(
+        description = "Number of context lines before and after each match (default: 2, max: 10)"
+    )]
     pub context_lines: Option<u32>,
 }
 
@@ -383,7 +387,9 @@ pub struct FindReferencesRequest {
     #[schemars(description = "Maximum number of results to return (default: 50, max: 100)")]
     pub limit: Option<u32>,
     /// Number of context lines before and after each match (default: 2, max: 10)
-    #[schemars(description = "Number of context lines before and after each reference (default: 2, max: 10)")]
+    #[schemars(
+        description = "Number of context lines before and after each reference (default: 2, max: 10)"
+    )]
     pub context_lines: Option<u32>,
 }
 
@@ -436,7 +442,9 @@ pub struct ExportReportRequest {
     #[schemars(description = "Summary of what was accomplished")]
     pub summary: String,
     /// AI model that generated this report (e.g., 'claude-sonnet-4-6', 'gpt-4o')
-    #[schemars(description = "AI model that generated this report (e.g., 'claude-sonnet-4-6', 'gpt-4o'). Include your model identifier so reports can be tracked per model.")]
+    #[schemars(
+        description = "AI model that generated this report (e.g., 'claude-sonnet-4-6', 'gpt-4o'). Include your model identifier so reports can be tracked per model."
+    )]
     pub model: Option<String>,
     /// List of Cortex tool names used during the task
     #[schemars(
@@ -599,10 +607,11 @@ impl CortexServer {
             }
         };
 
-        let total_count = match search::count_symbols(&pool, &request.query, kind_filter, search_mode).await {
-            Ok(c) => c as u32,
-            Err(_) => results.len() as u32, // Fallback to returned count
-        };
+        let total_count =
+            match search::count_symbols(&pool, &request.query, kind_filter, search_mode).await {
+                Ok(c) => c as u32,
+                Err(_) => results.len() as u32, // Fallback to returned count
+            };
 
         let has_more = (offset + limit) < total_count as usize;
 
@@ -694,62 +703,65 @@ impl CortexServer {
             }
         };
 
-        let symbol = match context::lookup_symbol(
-            &pool,
-            request.file_path.as_deref(),
-            &request.symbol_name,
-        )
-        .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                let error_code = match &e {
-                    crate::error::CortexError::SymbolNotFound(_) => "symbol_not_found",
-                    crate::error::CortexError::FileNotFound(_) => "file_not_found",
-                    _ => "query_error",
-                };
-                let message = e.to_string();
+        let symbol =
+            match context::lookup_symbol(&pool, request.file_path.as_deref(), &request.symbol_name)
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    let error_code = match &e {
+                        crate::error::CortexError::SymbolNotFound(_) => "symbol_not_found",
+                        crate::error::CortexError::FileNotFound(_) => "file_not_found",
+                        _ => "query_error",
+                    };
+                    let message = e.to_string();
 
-                // On symbol_not_found, suggest similar symbols
-                if matches!(&e, crate::error::CortexError::SymbolNotFound(_)) {
-                    let suggestions =
-                        search::search_symbols_paginated(&pool, &request.symbol_name, None, 5, 0, "contains")
-                            .await
-                            .unwrap_or_default();
+                    // On symbol_not_found, suggest similar symbols
+                    if matches!(&e, crate::error::CortexError::SymbolNotFound(_)) {
+                        let suggestions = search::search_symbols_paginated(
+                            &pool,
+                            &request.symbol_name,
+                            None,
+                            5,
+                            0,
+                            "contains",
+                        )
+                        .await
+                        .unwrap_or_default();
 
-                    if !suggestions.is_empty() {
-                        let suggested: Vec<serde_json::Value> = suggestions
-                            .iter()
-                            .map(|s| {
-                                serde_json::json!({
-                                    "name": s.name,
-                                    "kind": s.kind,
-                                    "file_path": s.path,
-                                    "signature": s.signature
+                        if !suggestions.is_empty() {
+                            let suggested: Vec<serde_json::Value> = suggestions
+                                .iter()
+                                .map(|s| {
+                                    serde_json::json!({
+                                        "name": s.name,
+                                        "kind": s.kind,
+                                        "file_path": s.path,
+                                        "signature": s.signature
+                                    })
                                 })
+                                .collect();
+
+                            return serde_json::json!({
+                                "error": {
+                                    "code": error_code,
+                                    "message": message,
+                                    "suggestions": suggested
+                                }
                             })
-                            .collect();
-
-                        return serde_json::json!({
-                            "error": {
-                                "code": error_code,
-                                "message": message,
-                                "suggestions": suggested
-                            }
-                        })
-                        .to_string();
+                            .to_string();
+                        }
                     }
+
+                    return serde_json::json!({
+                        "error": {
+                            "code": error_code,
+                            "message": message
+                        }
+                    })
+                    .to_string();
                 }
-
-                return serde_json::json!({
-                    "error": {
-                        "code": error_code,
-                        "message": message
-                    }
-                })
-                .to_string();
-            }
-        };
+            };
 
         let abs_path = symbol.absolute_path();
         let file_content = {
@@ -970,20 +982,27 @@ impl CortexServer {
         let context_lines = request.context_lines.unwrap_or(2).min(10) as usize;
         let ext = request.file_extension.as_deref();
 
-        let matches =
-            match content::search_content(&pool, &project_root, &request.pattern, ext, limit, context_lines).await
-            {
-                Ok(m) => m,
-                Err(e) => {
-                    return serde_json::json!({
-                        "error": {
-                            "code": "search_error",
-                            "message": format!("Content search failed: {e}")
-                        }
-                    })
-                    .to_string()
-                }
-            };
+        let matches = match content::search_content(
+            &pool,
+            &project_root,
+            &request.pattern,
+            ext,
+            limit,
+            context_lines,
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "search_error",
+                        "message": format!("Content search failed: {e}")
+                    }
+                })
+                .to_string()
+            }
+        };
 
         let total_count = matches.len() as u32;
         let has_more = total_count >= limit as u32;

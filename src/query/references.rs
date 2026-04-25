@@ -179,7 +179,8 @@ pub async fn find_references(
 
             // Track Python triple-quote state
             if uses_triple {
-                let triple_count = trimmed.matches("\"\"\"").count() + trimmed.matches("'''").count();
+                let triple_count =
+                    trimmed.matches("\"\"\"").count() + trimmed.matches("'''").count();
                 if triple_count % 2 == 1 {
                     in_triple_quote = !in_triple_quote;
                 }
@@ -197,7 +198,8 @@ pub async fn find_references(
             }
             // Lines starting with * inside a block comment (already handled by in_block_comment,
             // but catch standalone cases)
-            if trimmed.starts_with('*') && trimmed.len() > 1 && trimmed.chars().nth(1) == Some('/') {
+            if trimmed.starts_with('*') && trimmed.len() > 1 && trimmed.chars().nth(1) == Some('/')
+            {
                 continue;
             }
 
