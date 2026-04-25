@@ -1,5 +1,5 @@
 <h1 align="center">
-<img src="https://img.shields.io/badge/Cortex-v0.2.0-blue" alt="Cortex" />
+<img src="https://img.shields.io/badge/Cortex-v0.2.1-blue" alt="Cortex" />
 <br />
 Cortex — Local Code Context Engine for AI Assistants
 </h1>
@@ -60,9 +60,61 @@ Everything runs **locally** — no cloud services, no API keys, no data leaves y
 
 ## Installation
 
-### Install modes
+### Option A: Download a release binary (recommended, no Rust needed)
 
-Cortex supports two install modes: **global** and **local**.
+1. Download the latest binary for your platform from [Releases](https://github.com/nqh98/cortex/releases):
+
+```bash
+# Linux (x86_64)
+curl -fsSL https://github.com/nqh98/cortex/releases/latest/download/cortex-linux-x86_64.tar.gz | tar xz
+sudo mv cortex /usr/local/bin/
+
+# macOS (Apple Silicon)
+curl -fsSL https://github.com/nqh98/cortex/releases/latest/download/cortex-macos-aarch64.tar.gz | tar xz
+sudo mv cortex /usr/local/bin/
+
+# macOS (Intel)
+curl -fsSL https://github.com/nqh98/cortex/releases/latest/download/cortex-macos-x86_64.tar.gz | tar xz
+sudo mv cortex /usr/local/bin/
+```
+
+2. Verify it works:
+
+```bash
+cortex --help
+```
+
+3. Connect to your AI assistant. Add to your MCP config (e.g. `~/.claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "cortex": {
+      "command": "cortex",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+4. Restart your AI tool. Cortex auto-indexes your project on first query.
+
+### Option B: Install script (auto-downloads or builds from source)
+
+Clone and run the installer:
+
+```bash
+git clone https://github.com/nqh98/cortex.git
+cd cortex
+
+# Global install — binary goes to ~/.local/bin/cortex
+./install.sh
+
+# Local install — everything stays inside your project
+./install.sh local /path/to/your/project
+```
+
+The installer auto-detects the best source: prebuilt binary first, falls back to building from source if download fails.
 
 | | Global | Local |
 |---|---|---|
@@ -72,66 +124,56 @@ Cortex supports two install modes: **global** and **local**.
 | **MCP config** | `~/.claude/settings.json` | `<project>/.claude/settings.local.json` |
 | **CLAUDE.md** | `~/.claude/CLAUDE.md` | `<project>/CLAUDE.md` |
 | **Scope** | All projects | Single project |
-| **Uninstall** | Manual cleanup | `rm -rf .cortex CLAUDE.md` |
+| **Uninstall** | Remove binary + `~/.cortex` | `rm -rf .cortex CLAUDE.md` |
 
-### Binary sources
-
-No Rust required — Cortex can install from a prebuilt binary:
+Install script options:
 
 ```bash
-# Download latest prebuilt (no Rust needed)
-./install.sh
-./install.sh local .
-
-# Download specific version
-./install.sh --version v0.2.0
-./install.sh local . --version v0.2.0
-
-# Use a custom binary URL
-./install.sh --url https://example.com/cortex-linux-x86_64.tar.gz
-
-# Build from source (requires Rust)
-./install.sh --build
+./install.sh --version v0.2.1                  # Specific version
+./install.sh --url https://example.com/cortex   # Custom binary URL
+./install.sh --build                            # Force source build
 ```
-
-The default behavior auto-detects: tries prebuilt first, falls back to source build if download fails.
 
 ### Prerequisites
 
-- **Prebuilt install**: `curl` or `wget`, plus `jq`
+- **Download only**: `curl` (pre-installed on most systems)
+- **Install script**: `curl` or `wget`, plus `jq`
 - **Source build**: [Rust](https://rustup.rs/) (latest stable), plus `jq`
 
 ## Quick Start
 
-### 1. Connect to Claude via MCP
+### 1. Connect to your AI assistant
 
-`./install.sh` configures this automatically. Manual setup — add to your MCP config (`~/.claude/claude_desktop_config.json` or equivalent):
+After installing, Cortex runs as an MCP server. If you used `./install.sh`, this is already configured. If you downloaded the binary manually, add to your MCP config:
 
 ```json
 {
   "mcpServers": {
     "cortex": {
-      "command": "/home/username/.local/bin/cortex",
+      "command": "cortex",
       "args": ["serve"]
     }
   }
 }
 ```
 
+**Config file locations:**
+- **Claude Code CLI**: `~/.claude/settings.json`
+- **Claude Desktop**: `~/.config/claude/claude_desktop_config.json` (Linux) or `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
+- **Cursor / Windsurf**: Project's `.cursor/mcp.json` or `.windsurf/mcp.json`
+
 No need to manually index — Cortex auto-detects stale indexes and re-indexes before queries.
 
 ### 2. CLI usage (optional)
 
 ```bash
-cortex index ./my-project        # Index a project
-cortex search "handler" -p ./my-project
+cortex index ./my-project                  # Index a project
+cortex search "handler" -p ./my-project    # Search symbols
 cortex search "Parser" --kind struct -p ./my-project
-cortex context get_parser -p ./my-project
-cortex watch ./my-project        # Auto-reindex on file changes
-cortex list                      # List indexed projects
-cortex clean <name>              # Remove index by project name
-cortex clean all                 # Remove all indexes
-cortex reset /path/to/project    # Clear a project's index
+cortex context get_parser -p ./my-project  # Get symbol source
+cortex watch ./my-project                  # Auto-reindex on file changes
+cortex list                                # List indexed projects
+cortex reset /path/to/project              # Clear a project's index
 ```
 
 ## MCP Tools
