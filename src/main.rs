@@ -289,7 +289,7 @@ async fn run(cli: Cli) -> cortex::error::Result<()> {
         Commands::Update => {
             cortex::update::perform_update()
                 .await
-                .map_err(|e| cortex::error::CortexError::Update(e))?;
+                .map_err(cortex::error::CortexError::Update)?;
         }
     }
 
