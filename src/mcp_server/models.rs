@@ -360,7 +360,9 @@ pub struct GetFileContentRequest {
     #[schemars(description = "Absolute path to the project root directory")]
     pub project_root: String,
     /// Relative path to the source file within the project
-    #[schemars(description = "Relative path to the source file within the project (e.g., src/parser/mod.rs)")]
+    #[schemars(
+        description = "Relative path to the source file within the project (e.g., src/parser/mod.rs)"
+    )]
     pub file_path: String,
 }
 

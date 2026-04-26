@@ -5,7 +5,7 @@ use crate::mcp_server::models::{
     DocumentSymbolEntry, DocumentSymbolResult, ExportReportResult, FileFrequencyResult,
     FindReferencesResult, GetFileContentRequest, GetFileContentResult, ImportAnalysisResult,
     ImportEntry, IndexResult, IndexStatus, IssueFrequencyResult, KeywordSearchResult,
-    ReferenceMatchEntry, ReExportEntry, SearchResult, SuggestionFrequencyResult, SymbolMatch,
+    ReExportEntry, ReferenceMatchEntry, SearchResult, SuggestionFrequencyResult, SymbolMatch,
     SymbolStats, SynthesizeReportsResult, ToolUsageResult,
 };
 use crate::query::{content, context, document, imports_query, keyword, references, search};
@@ -990,9 +990,15 @@ impl CortexServer {
                 Ok(content) => {
                     let detected = detect_re_exports(&content, &request.file_path);
                     if !detected.is_empty() {
-                        (Some(detected), Some("File contains only re-exports (barrel file)".to_string()))
+                        (
+                            Some(detected),
+                            Some("File contains only re-exports (barrel file)".to_string()),
+                        )
                     } else {
-                        (None, Some("File has no indexable symbols or re-exports".to_string()))
+                        (
+                            None,
+                            Some("File has no indexable symbols or re-exports".to_string()),
+                        )
                     }
                 }
                 Err(_) => (None, None),
