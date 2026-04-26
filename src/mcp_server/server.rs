@@ -314,6 +314,11 @@ pub struct GetCodeContextRequest {
         description = "Relative path to the source file (e.g. src/parser/mod.rs). Use when multiple symbols have the same name to disambiguate."
     )]
     pub file_path: Option<String>,
+    /// Filter by symbol kind to disambiguate
+    #[schemars(
+        description = "Filter by symbol kind (e.g., 'function', 'class', 'interface') to disambiguate when multiple symbols share the same name"
+    )]
+    pub kind: Option<crate::models::SymbolKind>,
     /// Include surrounding context (lines before/after the symbol)
     #[schemars(
         description = "Number of context lines to include before and after the symbol (default: 0)"
@@ -368,6 +373,11 @@ pub struct SearchContentRequest {
         description = "Number of context lines before and after each match (default: 2, max: 10)"
     )]
     pub context_lines: Option<u32>,
+    /// Enable multiline matching
+    #[schemars(
+        description = "Enable multiline matching for patterns that span multiple lines (e.g., catch blocks, multi-line imports). Default: false"
+    )]
+    pub multiline: Option<bool>,
 }
 
 /// Find references request parameters
@@ -704,65 +714,70 @@ impl CortexServer {
             }
         };
 
-        let symbol =
-            match context::lookup_symbol(&pool, request.file_path.as_deref(), &request.symbol_name)
-                .await
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    let error_code = match &e {
-                        crate::error::CortexError::SymbolNotFound(_) => "symbol_not_found",
-                        crate::error::CortexError::FileNotFound(_) => "file_not_found",
-                        _ => "query_error",
-                    };
-                    let message = e.to_string();
+        let kind_str = request.kind.map(|k| k.as_str());
+        let symbol = match context::lookup_symbol(
+            &pool,
+            request.file_path.as_deref(),
+            &request.symbol_name,
+            kind_str,
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                let error_code = match &e {
+                    crate::error::CortexError::SymbolNotFound(_) => "symbol_not_found",
+                    crate::error::CortexError::FileNotFound(_) => "file_not_found",
+                    _ => "query_error",
+                };
+                let message = e.to_string();
 
-                    // On symbol_not_found, suggest similar symbols
-                    if matches!(&e, crate::error::CortexError::SymbolNotFound(_)) {
-                        let suggestions = search::search_symbols_paginated(
-                            &pool,
-                            &request.symbol_name,
-                            None,
-                            5,
-                            0,
-                            "contains",
-                        )
-                        .await
-                        .unwrap_or_default();
+                // On symbol_not_found, suggest similar symbols
+                if matches!(&e, crate::error::CortexError::SymbolNotFound(_)) {
+                    let suggestions = search::search_symbols_paginated(
+                        &pool,
+                        &request.symbol_name,
+                        None,
+                        5,
+                        0,
+                        "contains",
+                    )
+                    .await
+                    .unwrap_or_default();
 
-                        if !suggestions.is_empty() {
-                            let suggested: Vec<serde_json::Value> = suggestions
-                                .iter()
-                                .map(|s| {
-                                    serde_json::json!({
-                                        "name": s.name,
-                                        "kind": s.kind,
-                                        "file_path": s.path,
-                                        "signature": s.signature
-                                    })
+                    if !suggestions.is_empty() {
+                        let suggested: Vec<serde_json::Value> = suggestions
+                            .iter()
+                            .map(|s| {
+                                serde_json::json!({
+                                    "name": s.name,
+                                    "kind": s.kind,
+                                    "file_path": s.path,
+                                    "signature": s.signature
                                 })
-                                .collect();
-
-                            return serde_json::json!({
-                                "error": {
-                                    "code": error_code,
-                                    "message": message,
-                                    "suggestions": suggested
-                                }
                             })
-                            .to_string();
-                        }
-                    }
+                            .collect();
 
-                    return serde_json::json!({
-                        "error": {
-                            "code": error_code,
-                            "message": message
-                        }
-                    })
-                    .to_string();
+                        return serde_json::json!({
+                            "error": {
+                                "code": error_code,
+                                "message": message,
+                                "suggestions": suggested
+                            }
+                        })
+                        .to_string();
+                    }
                 }
-            };
+
+                return serde_json::json!({
+                    "error": {
+                        "code": error_code,
+                        "message": message
+                    }
+                })
+                .to_string();
+            }
+        };
 
         let abs_path = symbol.absolute_path();
         let file_content = {
@@ -1119,6 +1134,7 @@ impl CortexServer {
         let limit = request.limit.unwrap_or(50).min(200) as usize;
         let context_lines = request.context_lines.unwrap_or(2).min(10) as usize;
         let ext = request.file_extension.as_deref();
+        let multiline = request.multiline.unwrap_or(false);
 
         let matches = match content::search_content(
             &pool,
@@ -1127,6 +1143,7 @@ impl CortexServer {
             ext,
             limit,
             context_lines,
+            multiline,
         )
         .await
         {
@@ -1631,6 +1648,7 @@ impl CortexServer {
             files_indexed: stats.files_indexed as u32,
             files_unchanged: stats.files_unchanged as u32,
             files_failed: stats.files_failed as u32,
+            files_pruned: stats.files_pruned as u32,
             symbols_found: stats.symbols_found as u32,
             duration_ms,
             project_root,

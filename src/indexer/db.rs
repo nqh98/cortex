@@ -226,7 +226,7 @@ pub async fn search_symbols(pool: &DbPool, query: &str) -> crate::error::Result<
     Ok(rows)
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct SymbolRow {
     pub id: i64,
     pub project_root: String,
@@ -340,6 +340,60 @@ pub async fn get_project_stats(
         symbol_count.0 as u32,
         last_indexed.map(|r| r.0),
     ))
+}
+
+/// Delete DB entries for files that were not seen during the latest indexing walk.
+/// Returns the number of pruned file records.
+pub async fn prune_stale_files(
+    pool: &DbPool,
+    project_root: &str,
+    current_paths: &[String],
+) -> crate::error::Result<usize> {
+    let existing: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id, path FROM files WHERE project_root = ?")
+            .bind(project_root)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+
+    let current_set: std::collections::HashSet<&str> =
+        current_paths.iter().map(|s| s.as_str()).collect();
+
+    let stale_ids: Vec<i64> = existing
+        .iter()
+        .filter(|(_, path)| !current_set.contains(path.as_str()))
+        .map(|(id, _)| *id)
+        .collect();
+
+    if stale_ids.is_empty() {
+        return Ok(0);
+    }
+
+    for file_id in &stale_ids {
+        sqlx::query("DELETE FROM symbols WHERE file_id = ?")
+            .bind(file_id)
+            .execute(pool)
+            .await
+            .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+    }
+
+    for file_id in &stale_ids {
+        sqlx::query("DELETE FROM imports WHERE file_id = ?")
+            .bind(file_id)
+            .execute(pool)
+            .await
+            .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+    }
+
+    for file_id in &stale_ids {
+        sqlx::query("DELETE FROM files WHERE id = ?")
+            .bind(file_id)
+            .execute(pool)
+            .await
+            .map_err(|e| crate::error::CortexError::Database(e.to_string()))?;
+    }
+
+    Ok(stale_ids.len())
 }
 
 /// Get languages used in a project

@@ -76,12 +76,28 @@ impl Indexer {
             }
         }
 
+        // Prune stale entries for files that no longer exist on disk
+        let indexed_paths: Vec<String> = files
+            .iter()
+            .map(|f| {
+                f.path
+                    .strip_prefix(project_path)
+                    .unwrap_or(&f.path)
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+
+        let pruned = db::prune_stale_files(&self.pool, &project_root, &indexed_paths).await?;
+        stats.files_pruned = pruned;
+
         info!(
-            "Indexing complete: {} indexed, {} unchanged, {} skipped, {} failed, {} symbols",
+            "Indexing complete: {} indexed, {} unchanged, {} skipped, {} failed, {} pruned, {} symbols",
             stats.files_indexed,
             stats.files_unchanged,
             stats.files_skipped,
             stats.files_failed,
+            stats.files_pruned,
             stats.symbols_found
         );
 
@@ -172,6 +188,7 @@ pub struct IndexStats {
     pub files_unchanged: usize,
     pub files_skipped: usize,
     pub files_failed: usize,
+    pub files_pruned: usize,
     pub symbols_found: usize,
 }
 

@@ -7,9 +7,15 @@ pub async fn lookup_symbol(
     pool: &DbPool,
     file_path: Option<&str>,
     symbol_name: &str,
+    kind_filter: Option<&str>,
 ) -> Result<db::SymbolRow> {
     // Find the symbol in the database by name
     let mut symbols = db::search_symbols(pool, symbol_name).await?;
+
+    // Filter by kind if specified
+    if let Some(kind) = kind_filter {
+        symbols.retain(|s| s.kind == kind);
+    }
 
     // If file_path provided, filter and rank matches
     if let Some(fp) = file_path {
@@ -21,9 +27,10 @@ pub async fn lookup_symbol(
             .unwrap_or(fp);
 
         // Rank: exact > ends_with > absolute match > filename
+        // Secondary: prefer non-barrel definitions over re-export files
         symbols.sort_by(|a, b| {
-            let score = |s: &db::SymbolRow| -> u8 {
-                if s.path == fp {
+            let score = |s: &db::SymbolRow| -> (u8, bool) {
+                let path_score = if s.path == fp {
                     4
                 } else if s.path.ends_with(fp) {
                     3
@@ -34,13 +41,17 @@ pub async fn lookup_symbol(
                     1
                 } else {
                     0
-                }
+                };
+                let is_barrel = is_barrel_file(&s.path);
+                (path_score, is_barrel)
             };
-            score(b).cmp(&score(a))
+            let sa = score(a);
+            let sb = score(b);
+            // Higher path_score first, then prefer non-barrel (false < true in reverse)
+            sa.cmp(&sb).reverse()
         });
 
-        // If multiple matches with same score, return error for disambiguation
-        let filtered: Vec<_> = symbols
+        let mut filtered: Vec<_> = symbols
             .into_iter()
             .filter(|s| {
                 s.path == fp
@@ -51,10 +62,32 @@ pub async fn lookup_symbol(
             .collect();
 
         if filtered.len() > 1 {
-            return Err(CortexError::SymbolNotFound(format!(
-                "Multiple symbols named '{}' found in file '{}'. Use a more specific file path.",
-                symbol_name, fp
-            )));
+            // Prefer non-barrel definitions
+            let non_barrel: Vec<_> = filtered
+                .iter()
+                .filter(|s| !is_barrel_file(&s.path))
+                .cloned()
+                .collect();
+            if !non_barrel.is_empty() {
+                filtered = non_barrel;
+            }
+
+            // If still ambiguous, try exact name match (db::search_symbols uses LIKE)
+            if filtered.len() > 1 {
+                let exact_name: Vec<_> = filtered
+                    .iter()
+                    .filter(|s| s.name == symbol_name)
+                    .cloned()
+                    .collect();
+                if !exact_name.is_empty() {
+                    return Ok(exact_name.into_iter().next().unwrap());
+                }
+
+                return Err(CortexError::SymbolNotFound(format!(
+                    "Multiple symbols named '{}' found in file '{}'. Use 'kind' to disambiguate.",
+                    symbol_name, fp
+                )));
+            }
         }
 
         filtered
@@ -62,32 +95,59 @@ pub async fn lookup_symbol(
             .next()
             .ok_or_else(|| CortexError::SymbolNotFound(format!("{} in {}", symbol_name, fp)))
     } else {
-        // No file_path — check for ambiguity
-        if symbols.len() > 1 {
-            let symbol_list: String = symbols
+        // No file_path — filter by exact name first to narrow
+        let exact: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.name == symbol_name)
+            .cloned()
+            .collect();
+        let candidates = if exact.len() == 1 {
+            return Ok(exact.into_iter().next().unwrap());
+        } else if !exact.is_empty() {
+            exact
+        } else {
+            symbols
+        };
+
+        if candidates.len() > 1 {
+            let symbol_list: String = candidates
                 .iter()
                 .take(5)
-                .map(|s| format!("  {} ({})", s.name, s.path))
+                .map(|s| format!("  {} ({}) [{}]", s.name, s.path, s.kind))
                 .collect::<Vec<_>>()
                 .join("\n");
 
+            let remaining = if candidates.len() > 5 {
+                candidates.len() - 5
+            } else {
+                0
+            };
+
             return Err(CortexError::SymbolNotFound(format!(
-                "Multiple symbols named '{}' found. Please specify a file path:\n{}\n{} more matches...",
+                "Multiple symbols named '{}' found. Please specify a file path or kind:\n{}\n{} more matches...",
                 symbol_name,
                 symbol_list,
-                if symbols.len() > 5 {
-                    symbols.len() - 5
-                } else {
-                    0
-                }
+                remaining
             )));
         }
 
-        symbols
+        candidates
             .into_iter()
             .next()
             .ok_or_else(|| CortexError::SymbolNotFound(symbol_name.to_string()))
     }
+}
+
+/// Detect barrel/re-export files by naming convention.
+fn is_barrel_file(path: &str) -> bool {
+    let filename = Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    matches!(
+        filename,
+        "index.ts" | "index.tsx" | "index.js" | "index.jsx" | "mod.rs" | "__init__.py"
+    )
 }
 
 /// Extract code from file content using symbol line numbers (sync, no DB).

@@ -25,6 +25,7 @@ pub async fn search_content(
     file_extension: Option<&str>,
     limit: usize,
     context_lines: usize,
+    multiline: bool,
 ) -> Result<Vec<ContentMatch>> {
     // Fetch file paths from DB
     let files = if let Some(ext) = file_extension {
@@ -49,20 +50,37 @@ pub async fn search_content(
     let pattern_owned = pattern.to_string();
     let limit_owned = limit;
     let ctx_owned = context_lines;
+    let multiline_owned = multiline;
 
     // Run regex matching in a blocking thread
     Ok(tokio::task::spawn_blocking(move || {
-        let re = match regex::Regex::new(&pattern_owned) {
-            Ok(re) => re,
-            Err(_) => {
-                // Fall back to literal search with word boundaries
-                let escaped = regex::escape(&pattern_owned);
-                match regex::Regex::new(&format!(r"\b{escaped}\b")) {
-                    Ok(re) => re,
-                    Err(_) => match regex::Regex::new(&escaped) {
+        let re = if multiline_owned {
+            match regex::RegexBuilder::new(&pattern_owned)
+                .multi_line(true)
+                .dot_matches_new_line(true)
+                .build()
+            {
+                Ok(re) => re,
+                Err(_) => {
+                    let escaped = regex::escape(&pattern_owned);
+                    match regex::RegexBuilder::new(&escaped).multi_line(true).build() {
                         Ok(re) => re,
                         Err(_) => return Vec::new(),
-                    },
+                    }
+                }
+            }
+        } else {
+            match regex::Regex::new(&pattern_owned) {
+                Ok(re) => re,
+                Err(_) => {
+                    let escaped = regex::escape(&pattern_owned);
+                    match regex::Regex::new(&format!(r"\b{escaped}\b")) {
+                        Ok(re) => re,
+                        Err(_) => match regex::Regex::new(&escaped) {
+                            Ok(re) => re,
+                            Err(_) => return Vec::new(),
+                        },
+                    }
                 }
             }
         };
@@ -76,12 +94,17 @@ pub async fn search_content(
                 Err(_) => continue,
             };
 
-            let lines: Vec<&str> = content.lines().collect();
+            if multiline_owned {
+                for mat in re.find_iter(&content) {
+                    let start_line = content[..mat.start()].lines().count() + 1;
+                    let end_line = content[..mat.end()].lines().count();
 
-            for (i, line) in lines.iter().enumerate() {
-                if re.is_match(line) {
-                    let before: Vec<String> = if i > 0 {
-                        lines[i.saturating_sub(ctx_owned)..i]
+                    let lines: Vec<&str> = content.lines().collect();
+                    let matched_text = mat.as_str();
+
+                    let before: Vec<String> = if start_line > 1 {
+                        let ctx_start = start_line.saturating_sub(ctx_owned + 1);
+                        lines[ctx_start..start_line - 1]
                             .iter()
                             .map(|l| l.to_string())
                             .collect()
@@ -89,22 +112,59 @@ pub async fn search_content(
                         Vec::new()
                     };
 
-                    let after: Vec<String> = lines
-                        .get(i + 1..std::cmp::min(i + 1 + ctx_owned, lines.len()))
-                        .map(|slice| slice.iter().map(|l| l.to_string()).collect())
-                        .unwrap_or_default();
+                    let after: Vec<String> = if end_line < lines.len() {
+                        lines[end_line..std::cmp::min(end_line + ctx_owned, lines.len())]
+                            .iter()
+                            .map(|l| l.to_string())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
 
                     matches.push(ContentMatch {
                         file_path: file.path.clone(),
                         project_root: file.project_root.clone(),
-                        line_number: i + 1,
-                        line_content: line.to_string(),
+                        line_number: start_line,
+                        line_content: matched_text.to_string(),
                         context_before: before,
                         context_after: after,
                     });
 
                     if matches.len() >= limit_owned {
                         return matches;
+                    }
+                }
+            } else {
+                let lines: Vec<&str> = content.lines().collect();
+
+                for (i, line) in lines.iter().enumerate() {
+                    if re.is_match(line) {
+                        let before: Vec<String> = if i > 0 {
+                            lines[i.saturating_sub(ctx_owned)..i]
+                                .iter()
+                                .map(|l| l.to_string())
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+
+                        let after: Vec<String> = lines
+                            .get(i + 1..std::cmp::min(i + 1 + ctx_owned, lines.len()))
+                            .map(|slice| slice.iter().map(|l| l.to_string()).collect())
+                            .unwrap_or_default();
+
+                        matches.push(ContentMatch {
+                            file_path: file.path.clone(),
+                            project_root: file.project_root.clone(),
+                            line_number: i + 1,
+                            line_content: line.to_string(),
+                            context_before: before,
+                            context_after: after,
+                        });
+
+                        if matches.len() >= limit_owned {
+                            return matches;
+                        }
                     }
                 }
             }

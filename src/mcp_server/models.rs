@@ -281,6 +281,8 @@ pub struct IndexResult {
     pub files_unchanged: u32,
     /// Number of failed files
     pub files_failed: u32,
+    /// Number of stale entries removed (files deleted/moved since last index)
+    pub files_pruned: u32,
     /// Total symbols found
     pub symbols_found: u32,
     /// Duration in milliseconds

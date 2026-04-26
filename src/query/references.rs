@@ -111,6 +111,7 @@ pub async fn find_references(
         None,
         limit * 3, // Fetch extra since we'll filter many out
         context_lines,
+        false,
     )
     .await?;
 
