@@ -322,6 +322,10 @@ pub struct DocumentSymbolResult {
     pub language: Option<String>,
     /// Symbols in the file, sorted by start line
     pub symbols: Vec<DocumentSymbolEntry>,
+    /// Re-export entries (populated for barrel/index files with no declared symbols)
+    pub re_exports: Option<Vec<ReExportEntry>>,
+    /// Informational note (e.g., "File contains only re-exports (barrel file)")
+    pub note: Option<String>,
 }
 
 /// Individual symbol entry in a document
@@ -347,6 +351,43 @@ pub struct DocumentSymbolEntry {
     pub documentation: Option<String>,
     /// Child symbols (symbols nested within this one)
     pub children: Vec<DocumentSymbolEntry>,
+}
+
+/// Get file content request parameters
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetFileContentRequest {
+    /// Absolute path to the project root directory
+    #[schemars(description = "Absolute path to the project root directory")]
+    pub project_root: String,
+    /// Relative path to the source file within the project
+    #[schemars(description = "Relative path to the source file within the project (e.g., src/parser/mod.rs)")]
+    pub file_path: String,
+}
+
+/// Get file content result
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GetFileContentResult {
+    /// File path (relative to project root)
+    pub file_path: String,
+    /// Project root path
+    pub project_root: String,
+    /// Detected language of the file
+    pub language: Option<String>,
+    /// Full file contents
+    pub content: String,
+    /// Number of lines in the file
+    pub line_count: usize,
+}
+
+/// Re-export entry for barrel/index files
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ReExportEntry {
+    /// Symbols being re-exported (None for wildcard `export * from`)
+    pub exported_symbols: Option<Vec<String>>,
+    /// Source module path
+    pub source_path: String,
+    /// Line number of the re-export statement
+    pub start_line: i64,
 }
 
 /// Import analysis result

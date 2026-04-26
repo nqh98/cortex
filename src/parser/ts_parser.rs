@@ -70,7 +70,38 @@ fn extract_ts_symbols(node: &tree_sitter::Node, source: &str, symbols: &mut Vec<
         }
         "export_statement" => {
             let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
+            let children: Vec<tree_sitter::Node> = node.children(&mut cursor).collect();
+            let child_kinds: Vec<&str> = children.iter().map(|c| c.kind()).collect();
+
+            // `export * from './module'` — no export_all_statement wrapper, just *, from, string
+            if child_kinds.contains(&"*") && child_kinds.contains(&"from") {
+                let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("");
+                if let Some(source_path) = extract_ts_from_path(raw) {
+                    symbols.push(Symbol {
+                        name: format!("* from {source_path}"),
+                        kind: SymbolKind::Module,
+                        start_line: node.start_position().row + 1,
+                        end_line: node.end_position().row + 1,
+                        start_col: node.start_position().column,
+                        end_col: node.end_position().column,
+                        signature: Some(raw.trim().to_string()),
+                        documentation: None,
+                    });
+                }
+                return;
+            }
+
+            // `export { foo, bar } from './module'` — export_clause + from + string
+            if child_kinds.contains(&"export_clause") && child_kinds.contains(&"from") {
+                if let Some(clause) = children.iter().find(|c| c.kind() == "export_clause") {
+                    if let Some(sym) = extract_export_clause(clause, source, node) {
+                        symbols.push(sym);
+                    }
+                }
+                return;
+            }
+
+            for child in &children {
                 match child.kind() {
                     "function_declaration"
                     | "generator_function_declaration"
@@ -79,7 +110,7 @@ fn extract_ts_symbols(node: &tree_sitter::Node, source: &str, symbols: &mut Vec<
                     | "type_alias_declaration"
                     | "enum_declaration"
                     | "lexical_declaration"
-                    | "variable_declaration" => extract_ts_symbols(&child, source, symbols),
+                    | "variable_declaration" => extract_ts_symbols(child, source, symbols),
                     _ => {}
                 }
             }
@@ -114,6 +145,56 @@ fn extract_ts_symbols(node: &tree_sitter::Node, source: &str, symbols: &mut Vec<
     for child in node.children(&mut cursor) {
         extract_ts_symbols(&child, source, symbols);
     }
+}
+
+fn extract_export_clause(
+    clause_node: &tree_sitter::Node,
+    source: &str,
+    export_node: &tree_sitter::Node,
+) -> Option<Symbol> {
+    // Only create a symbol if this is a re-export (has a `from` clause at the export_statement level)
+    let raw = export_node.utf8_text(source.as_bytes()).ok()?;
+    if !raw.contains(" from ") && !raw.contains(" from'") && !raw.contains(" from\"") {
+        return None;
+    }
+    let source_path = extract_ts_from_path(raw)?;
+    let mut names = Vec::new();
+    let mut cursor = clause_node.walk();
+    for child in clause_node.children(&mut cursor) {
+        if child.kind() == "export_specifier" {
+            if let Some(name_node) = child.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    let display_name = if names.is_empty() {
+        format!("{{}} from {source_path}")
+    } else {
+        format!("{{ {} }} from {source_path}", names.join(", "))
+    };
+    Some(Symbol {
+        name: display_name,
+        kind: SymbolKind::Module,
+        start_line: export_node.start_position().row + 1,
+        end_line: export_node.end_position().row + 1,
+        start_col: export_node.start_position().column,
+        end_col: export_node.end_position().column,
+        signature: Some(raw.trim().to_string()),
+        documentation: None,
+    })
+}
+
+fn extract_ts_from_path(raw: &str) -> Option<String> {
+    let from_idx = raw.find(" from ")?;
+    let after = &raw[from_idx + 6..].trim();
+    Some(
+        after
+            .trim_matches(|c| c == '\'' || c == '"' || c == '`')
+            .trim_end_matches(';')
+            .to_string(),
+    )
 }
 
 fn extract_named_symbol(
@@ -424,5 +505,46 @@ fn extract_ts_imports(node: &tree_sitter::Node, source: &str, imports: &mut Vec<
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         extract_ts_imports(&child, source, imports);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_parse_export_all() {
+        let code = "export * from './utils';\n";
+        let parser = TsParser;
+        let result = parser.parse(code, &PathBuf::from("index.ts"));
+        assert!(result
+            .symbols
+            .iter()
+            .any(|s| s.kind == SymbolKind::Module && s.name.contains("* from ./utils")));
+    }
+
+    #[test]
+    fn test_parse_named_re_export() {
+        let code = "export { foo, bar } from './module';\n";
+        let parser = TsParser;
+        let result = parser.parse(code, &PathBuf::from("index.ts"));
+        assert!(result
+            .symbols
+            .iter()
+            .any(|s| s.kind == SymbolKind::Module && s.name.contains("foo")));
+    }
+
+    #[test]
+    fn test_barrel_file() {
+        let code = "export * from './utils';\nexport { UserService } from './user.service';\n";
+        let parser = TsParser;
+        let result = parser.parse(code, &PathBuf::from("index.ts"));
+        let modules: Vec<_> = result
+            .symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Module)
+            .collect();
+        assert_eq!(modules.len(), 2);
     }
 }

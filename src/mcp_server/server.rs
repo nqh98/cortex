@@ -3,9 +3,10 @@ use crate::indexer::{db, Indexer};
 use crate::mcp_server::models::{
     CodeContextResult, ContentMatchEntry, ContentSearchResult, DirectoryListing,
     DocumentSymbolEntry, DocumentSymbolResult, ExportReportResult, FileFrequencyResult,
-    FindReferencesResult, ImportAnalysisResult, ImportEntry, IndexResult, IndexStatus,
-    IssueFrequencyResult, KeywordSearchResult, ReferenceMatchEntry, SearchResult,
-    SuggestionFrequencyResult, SymbolMatch, SymbolStats, SynthesizeReportsResult, ToolUsageResult,
+    FindReferencesResult, GetFileContentRequest, GetFileContentResult, ImportAnalysisResult,
+    ImportEntry, IndexResult, IndexStatus, IssueFrequencyResult, KeywordSearchResult,
+    ReferenceMatchEntry, ReExportEntry, SearchResult, SuggestionFrequencyResult, SymbolMatch,
+    SymbolStats, SynthesizeReportsResult, ToolUsageResult,
 };
 use crate::query::{content, context, document, imports_query, keyword, references, search};
 use crate::scanner::walker;
@@ -817,6 +818,102 @@ impl CortexServer {
         })
     }
 
+    /// Read the full source code contents of a file.
+    #[tool(
+        description = "Read the full source code contents of a file within the project. Returns the file content, detected language, and line count. Useful for reviewing entire files, barrel/index files, or files with no declared symbols."
+    )]
+    async fn get_file_content(
+        &self,
+        Parameters(request): Parameters<GetFileContentRequest>,
+    ) -> String {
+        let project_root = match std::path::Path::new(&request.project_root).canonicalize() {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "invalid_path",
+                        "message": format!("Project root not found: {}", request.project_root)
+                    }
+                })
+                .to_string()
+            }
+        };
+
+        let abs = std::path::Path::new(&project_root).join(&request.file_path);
+
+        // Ensure resolved path stays within the project root
+        let canonical_abs = match abs.canonicalize() {
+            Ok(p) => p,
+            Err(_) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "file_not_found",
+                        "message": format!("File '{}' not found in project.", request.file_path)
+                    }
+                })
+                .to_string()
+            }
+        };
+
+        let canonical_root = std::path::Path::new(&project_root);
+        match canonical_abs.strip_prefix(canonical_root) {
+            Ok(_) => {}
+            Err(_) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "invalid_path",
+                        "message": "File path escapes project root."
+                    }
+                })
+                .to_string();
+            }
+        }
+
+        let content = match self.file_cache.lock().unwrap().read(&canonical_abs) {
+            Ok(c) => c,
+            Err(e) => {
+                return serde_json::json!({
+                    "error": {
+                        "code": "read_error",
+                        "message": format!("Failed to read file: {e}")
+                    }
+                })
+                .to_string();
+            }
+        };
+
+        let line_count = content.lines().count();
+        let language = std::path::Path::new(&request.file_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(|ext| match ext {
+                "rs" => Some("rust"),
+                "py" => Some("python"),
+                "js" | "jsx" => Some("javascript"),
+                "ts" | "tsx" => Some("typescript"),
+                "java" => Some("java"),
+                _ => None,
+            })
+            .map(|s| s.to_string());
+
+        serde_json::to_string(&GetFileContentResult {
+            file_path: request.file_path,
+            project_root,
+            language,
+            content,
+            line_count,
+        })
+        .unwrap_or_else(|e| {
+            serde_json::json!({
+                "error": {
+                    "code": "serialization_error",
+                    "message": format!("Failed to serialize result: {e}")
+                }
+            })
+            .to_string()
+        })
+    }
+
     /// List all symbols defined in a specific file (like LSP documentSymbol).
     ///
     /// Returns symbols sorted by line with parent-child hierarchy.
@@ -888,12 +985,25 @@ impl CortexServer {
                     }
                 }).to_string();
             }
-            // File exists but has no indexable symbols (e.g., barrel files, empty files)
+            // File exists but has no indexable symbols — check for re-exports (barrel files)
+            let (re_exports, note) = match self.file_cache.lock().unwrap().read(&abs) {
+                Ok(content) => {
+                    let detected = detect_re_exports(&content, &request.file_path);
+                    if !detected.is_empty() {
+                        (Some(detected), Some("File contains only re-exports (barrel file)".to_string()))
+                    } else {
+                        (None, Some("File has no indexable symbols or re-exports".to_string()))
+                    }
+                }
+                Err(_) => (None, None),
+            };
             return serde_json::to_string(&DocumentSymbolResult {
                 file_path: request.file_path,
                 project_root,
                 language: None,
                 symbols: Vec::new(),
+                re_exports,
+                note,
             })
             .unwrap_or_else(|e| {
                 serde_json::json!({
@@ -930,6 +1040,8 @@ impl CortexServer {
             project_root,
             language: None,
             symbols: hierarchical,
+            re_exports: None,
+            note: None,
         })
         .unwrap_or_else(|e| {
             serde_json::json!({
@@ -2154,6 +2266,126 @@ fn build_symbol_hierarchy(mut entries: Vec<DocumentSymbolEntry>) -> Vec<Document
     }
 
     entries
+}
+
+/// Detect re-export patterns in file content.
+/// Covers JS/TS (`export * from`, `export { ... } from`) and Python (`from . import *`).
+fn detect_re_exports(content: &str, file_path: &str) -> Vec<ReExportEntry> {
+    let ext = std::path::Path::new(file_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+
+    match ext {
+        "ts" | "tsx" | "js" | "jsx" => detect_js_ts_re_exports(content),
+        "py" => detect_python_re_exports(content),
+        _ => Vec::new(),
+    }
+}
+
+fn detect_js_ts_re_exports(content: &str) -> Vec<ReExportEntry> {
+    let mut re_exports = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        let line_num = (i + 1) as i64;
+
+        // `export * from './module'` or `export * as name from './module'`
+        if trimmed.starts_with("export *") {
+            if let Some(source) = extract_from_path(trimmed) {
+                re_exports.push(ReExportEntry {
+                    exported_symbols: None,
+                    source_path: source,
+                    start_line: line_num,
+                });
+            }
+        }
+        // `export { foo, bar } from './module'`
+        else if trimmed.starts_with("export {") {
+            if let Some(source) = extract_from_path(trimmed) {
+                let symbols = extract_exported_names(trimmed);
+                re_exports.push(ReExportEntry {
+                    exported_symbols: Some(symbols),
+                    source_path: source,
+                    start_line: line_num,
+                });
+            }
+        }
+    }
+    re_exports
+}
+
+fn extract_from_path(line: &str) -> Option<String> {
+    let from_idx = line.find(" from ")?;
+    let after_from = &line[from_idx + 6..].trim();
+    Some(
+        after_from
+            .trim_matches(|c| c == '\'' || c == '"' || c == '`')
+            .trim_end_matches(';')
+            .to_string(),
+    )
+}
+
+fn extract_exported_names(line: &str) -> Vec<String> {
+    let open = match line.find('{') {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    let close = match line.find('}') {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    let inner = &line[open + 1..close];
+    inner
+        .split(',')
+        .filter_map(|s| {
+            let name = s.trim();
+            let base = name.split(" as ").next().unwrap_or(name).trim();
+            if !base.is_empty() {
+                Some(base.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn detect_python_re_exports(content: &str) -> Vec<ReExportEntry> {
+    let mut re_exports = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        let line_num = (i + 1) as i64;
+
+        // `from .module import *`
+        // `from .module import foo, bar`
+        if trimmed.starts_with("from ") && trimmed.contains(" import ") {
+            let import_idx = trimmed.find(" import ").unwrap();
+            let source = trimmed[5..import_idx].trim().to_string();
+            let imported = &trimmed[import_idx + 8..].trim_end_matches(';');
+            let symbols = if imported.trim() == "*" {
+                None
+            } else {
+                Some(
+                    imported
+                        .split(',')
+                        .filter_map(|s| {
+                            let name = s.trim();
+                            if !name.is_empty() {
+                                Some(name.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect(),
+                )
+            };
+            re_exports.push(ReExportEntry {
+                exported_symbols: symbols,
+                source_path: source,
+                start_line: line_num,
+            });
+        }
+    }
+    re_exports
 }
 
 #[tool_handler]

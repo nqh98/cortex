@@ -62,19 +62,50 @@ fn extract_js_symbols(node: &tree_sitter::Node, source: &str, symbols: &mut Vec<
         }
         "export_statement" => {
             let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
+            let children: Vec<tree_sitter::Node> = node.children(&mut cursor).collect();
+            let child_kinds: Vec<&str> = children.iter().map(|c| c.kind()).collect();
+
+            // `export * from './module'`
+            if child_kinds.contains(&"*") && child_kinds.contains(&"from") {
+                let raw = node.utf8_text(source.as_bytes()).ok().unwrap_or("");
+                if let Some(source_path) = extract_js_from_path(raw) {
+                    symbols.push(Symbol {
+                        name: format!("* from {source_path}"),
+                        kind: SymbolKind::Module,
+                        start_line: node.start_position().row + 1,
+                        end_line: node.end_position().row + 1,
+                        start_col: node.start_position().column,
+                        end_col: node.end_position().column,
+                        signature: Some(raw.trim().to_string()),
+                        documentation: None,
+                    });
+                }
+                return;
+            }
+
+            // `export { foo, bar } from './module'`
+            if child_kinds.contains(&"export_clause") && child_kinds.contains(&"from") {
+                if let Some(clause) = children.iter().find(|c| c.kind() == "export_clause") {
+                    if let Some(sym) = extract_js_export_clause(clause, source, node) {
+                        symbols.push(sym);
+                    }
+                }
+                return;
+            }
+
+            for child in &children {
                 match child.kind() {
                     "function_declaration" => {
-                        if let Some(sym) = extract_js_function(&child, source, SymbolKind::Function)
+                        if let Some(sym) = extract_js_function(child, source, SymbolKind::Function)
                         {
                             symbols.push(sym);
                         }
                     }
                     "class_declaration" => {
-                        extract_js_symbols(&child, source, symbols);
+                        extract_js_symbols(child, source, symbols);
                     }
                     "lexical_declaration" | "variable_declaration" => {
-                        extract_variable_declarations(&child, source, symbols);
+                        extract_variable_declarations(child, source, symbols);
                     }
                     _ => {}
                 }
@@ -88,6 +119,55 @@ fn extract_js_symbols(node: &tree_sitter::Node, source: &str, symbols: &mut Vec<
     for child in node.children(&mut cursor) {
         extract_js_symbols(&child, source, symbols);
     }
+}
+
+fn extract_js_export_clause(
+    clause_node: &tree_sitter::Node,
+    source: &str,
+    export_node: &tree_sitter::Node,
+) -> Option<Symbol> {
+    let raw = export_node.utf8_text(source.as_bytes()).ok()?;
+    if !raw.contains(" from ") && !raw.contains(" from'") && !raw.contains(" from\"") {
+        return None;
+    }
+    let source_path = extract_js_from_path(raw)?;
+    let mut names = Vec::new();
+    let mut cursor = clause_node.walk();
+    for child in clause_node.children(&mut cursor) {
+        if child.kind() == "export_specifier" {
+            if let Some(name_node) = child.child_by_field_name("name") {
+                if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    let display_name = if names.is_empty() {
+        format!("{{}} from {source_path}")
+    } else {
+        format!("{{ {} }} from {source_path}", names.join(", "))
+    };
+    Some(Symbol {
+        name: display_name,
+        kind: SymbolKind::Module,
+        start_line: export_node.start_position().row + 1,
+        end_line: export_node.end_position().row + 1,
+        start_col: export_node.start_position().column,
+        end_col: export_node.end_position().column,
+        signature: Some(raw.trim().to_string()),
+        documentation: None,
+    })
+}
+
+fn extract_js_from_path(raw: &str) -> Option<String> {
+    let from_idx = raw.find(" from ")?;
+    let after = &raw[from_idx + 6..].trim();
+    Some(
+        after
+            .trim_matches(|c| c == '\'' || c == '"' || c == '`')
+            .trim_end_matches(';')
+            .to_string(),
+    )
 }
 
 fn extract_js_function(node: &tree_sitter::Node, source: &str, kind: SymbolKind) -> Option<Symbol> {
@@ -414,5 +494,27 @@ mod tests {
             .find(|s| s.kind == SymbolKind::Class)
             .unwrap();
         assert!(class.signature.as_ref().unwrap().contains("extends"));
+    }
+
+    #[test]
+    fn test_parse_export_all() {
+        let code = "export * from './helpers';\n";
+        let parser = JsParser;
+        let result = parser.parse(code, &PathBuf::from("index.js"));
+        assert!(result
+            .symbols
+            .iter()
+            .any(|s| s.kind == SymbolKind::Module && s.name.contains("* from ./helpers")));
+    }
+
+    #[test]
+    fn test_parse_named_re_export() {
+        let code = "export { processRequest } from './handler';\n";
+        let parser = JsParser;
+        let result = parser.parse(code, &PathBuf::from("index.js"));
+        assert!(result
+            .symbols
+            .iter()
+            .any(|s| s.kind == SymbolKind::Module && s.name.contains("processRequest")));
     }
 }

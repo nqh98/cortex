@@ -1,5 +1,5 @@
 <h1 align="center">
-<img src="https://img.shields.io/badge/Cortex-v0.2.5-blue" alt="Cortex" />
+<img src="https://img.shields.io/badge/Cortex-v0.3.0-blue" alt="Cortex" />
 <br />
 Cortex — Local Code Context Engine for AI Assistants
 </h1>
@@ -23,14 +23,14 @@ Works with <strong>Claude Code</strong>, <strong>Cline</strong>, <strong>Cursor<
 <a href="#features">Features</a> &bull;
 <a href="#installation">Installation</a> &bull;
 <a href="#quick-start">Quick Start</a> &bull;
-<a href="#mcp-tools">13 MCP Tools</a> &bull;
+<a href="#mcp-tools">14 MCP Tools</a> &bull;
 <a href="#supported-languages">Languages</a> &bull;
 <a href="#how-it-works">Architecture</a>
 </p>
 
 ---
 
-**Cortex** is a local-first code context engine that parses source files with [Tree-sitter](https://tree-sitter.github.io/), stores symbols and imports in [SQLite](https://www.sqlite.org/) with [FTS5](https://www.sqlite.org/fts5.html) full-text search, and exposes **13 query tools** over [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) via stdio JSON-RPC.
+**Cortex** is a local-first code context engine that parses source files with [Tree-sitter](https://tree-sitter.github.io/), stores symbols and imports in [SQLite](https://www.sqlite.org/) with [FTS5](https://www.sqlite.org/fts5.html) full-text search, and exposes **14 query tools** over [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) via stdio JSON-RPC.
 
 Everything runs **locally** — no cloud services, no API keys, no data leaves your machine.
 
@@ -47,7 +47,7 @@ Everything runs **locally** — no cloud services, no API keys, no data leaves y
 
 ## Features
 
-- **13 MCP tools** — symbol search, code retrieval, content grep, reference finding, import analysis, full-text search, and more
+- **14 MCP tools** — symbol search, code retrieval, file reading, content grep, reference finding, import analysis, full-text search, and more
 - **Multi-language** — Rust, Python, JavaScript, TypeScript, Java
 - **Auto-reindex** — detects stale indexes and re-indexes automatically before queries
 - **11 symbol kinds** — functions, structs, classes, interfaces, type aliases, enums, traits, impls, constants, modules, methods
@@ -55,7 +55,8 @@ Everything runs **locally** — no cloud services, no API keys, no data leaves y
 - **Full-text search** — FTS5 with BM25 ranking across symbol names, signatures, and documentation
 - **Reference finding** — finds all usages of a symbol across the project with classification (import, call, type usage)
 - **Content search** — regex grep across indexed files with context lines
-- **Document symbols** — lists all symbols in a file with parent-child hierarchy
+- **Document symbols** — lists all symbols in a file with parent-child hierarchy, detects barrel/index re-export files
+- **File content** — read full file source within Cortex without needing a symbol name
 - **Per-project indexes** — each project stores its own index in `.cortex/index.sqlite` alongside the code
 
 ## Installation
@@ -178,7 +179,8 @@ cortex update                              # Update to latest version
 |------|-------------|
 | `search_symbols` | Find symbols by name with kind filter and pagination |
 | `get_code_context` | Retrieve full source code for a symbol by name |
-| `list_document_symbols` | List all symbols in a file with parent-child hierarchy |
+| `get_file_content` | Read full file contents by path (no symbol name needed) |
+| `list_document_symbols` | List symbols in a file with hierarchy; detects barrel re-export files |
 | `search_content` | Grep file contents by regex or plain text with context lines |
 | `find_references` | Find all references to a symbol across the project |
 | `search_by_semantic` | Full-text search across symbol names, signatures, docs |
@@ -240,7 +242,7 @@ Source Files ──▶ Tree-sitter Parser ──▶ SQLite Index ──▶ MCP S
 1. **Scanner** walks the directory respecting `.gitignore`
 2. **Parser** generates ASTs with Tree-sitter, extracts symbols and import statements
 3. **Indexer** stores in SQLite with file hashes for incremental updates, FTS5 for text search
-4. **MCP Server** serves 13 tools over stdio, auto-reindexes when stale
+4. **MCP Server** serves 14 tools over stdio, auto-reindexes when stale
 
 ## Architecture
 
@@ -256,7 +258,7 @@ src/
 ├── query/            Search, context, references, content, semantic, imports
 ├── update.rs         Self-update from GitHub releases
 ├── watcher/          File change detection via notify
-└── mcp_server/       MCP tool server with 13 tools
+└── mcp_server/       MCP tool server with 14 tools
 ```
 
 ## Configuration
